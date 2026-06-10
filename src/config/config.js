@@ -11,7 +11,7 @@ if (process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development') {
     console.log('🔧 Configuración de base de datos:');
     console.log(`   Host: ${process.env.DB_HOST || process.env.MYSQLHOST || 'localhost'}`);
     console.log(`   Port: ${process.env.DB_PORT || process.env.MYSQLPORT || 3306}`);
-    console.log(`   Name: ${process.env.DB_NAME || process.env.MYSQLDATABASE || 'demitrio_db'}`);
+    console.log(`   Name: ${process.env.DB_NAME || process.env.MYSQLDATABASE || 'jesuslab_db'}`);
     console.log(`   User: ${process.env.DB_USER || process.env.MYSQLUSER || 'root'}`);
 }
 
@@ -22,7 +22,7 @@ module.exports = {
     db: {
         host: process.env.DB_HOST || process.env.MYSQLHOST || 'localhost',
         port: parseInt(process.env.DB_PORT || process.env.MYSQLPORT) || 3306,
-        name: process.env.DB_NAME || process.env.MYSQLDATABASE || 'demitrio_db',
+        name: process.env.DB_NAME || process.env.MYSQLDATABASE || 'jesuslab_db',
         user: process.env.DB_USER || process.env.MYSQLUSER || 'root',
         password: process.env.DB_PASSWORD || process.env.MYSQLPASSWORD || '',
         dialect: 'mysql',
