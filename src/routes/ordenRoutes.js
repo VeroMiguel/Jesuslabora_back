@@ -15,7 +15,8 @@ const {
     obtenerIngresosMensuales,
     obtenerFechaServidor,
     actualizarImagenReferencia,
-    obtenerFechaHoraServidor  // <-- NUEVO
+    obtenerFechaHoraServidor, 
+    obtenerOrdenesConFiltrosAvanzados // NUEVA FUNCIONALIDAD
 } = require('../controllers/ordenController');
 const { autenticar, autorizar } = require('../middleware/auth');
 const { validarOrden } = require('../middleware/validator');
@@ -64,4 +65,6 @@ router.delete('/:id', autenticar, autorizar('admin'), eliminarOrden);
 
 // NUEVA RUTA: Subir imagen de referencia para una orden (con autenticación)
 router.post('/:id/imagen-referencia', autenticar, upload.single('imagen'), actualizarImagenReferencia);
+// En ordenRoutes.js - AGREGAR:
+router.get('/filtros-avanzados', autenticar, obtenerOrdenesConFiltrosAvanzados);
 module.exports = router;

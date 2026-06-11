@@ -6,6 +6,7 @@ const Orden = require('./Orden');
 const Pago = require('./Pago');
 const Configuracion = require('./Configuracion');
 const TokenFCM = require('./TokenFCM');  // ✅ AGREGAR ESTA LÍNEA
+const DetalleOrden = require('./DetalleOrden');
 // Definir relaciones con opciones explícitas
 Doctor.hasMany(Orden, { 
     foreignKey: 'doctor_id', 
@@ -87,13 +88,39 @@ TokenFCM.belongsTo(Usuario, {
     foreignKey: 'usuario_id', 
     as: 'usuario'
 });
+
+// AGREGAR RELACIONES
+Orden.hasMany(DetalleOrden, { 
+    foreignKey: 'orden_id', 
+    as: 'detalles',
+    onDelete: 'CASCADE'
+});
+DetalleOrden.belongsTo(Orden, { 
+    foreignKey: 'orden_id', 
+    as: 'orden'
+});
+DetalleOrden.belongsTo(Servicio, { 
+    foreignKey: 'servicio_id', 
+    as: 'servicio'
+});
+Servicio.hasMany(DetalleOrden, { 
+    foreignKey: 'servicio_id', 
+    as: 'detalles_orden'
+});
+
+
+
+
+
+
 module.exports = {
     sequelize,
     Usuario,
     Doctor,
     Servicio,
     Orden,
+    DetalleOrden,  // <-- AGREGAR
     Pago,
     Configuracion,
-    TokenFCM  // ✅ AGREGAR ESTA LÍNEA
+    TokenFCM
 };
