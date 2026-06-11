@@ -1,3 +1,4 @@
+// validator.js - Versión completa corregida
 const { body, validationResult } = require('express-validator');
 
 const validarCampos = (req, res, next) => {
@@ -24,13 +25,15 @@ const validarLogin = [
     validarCampos
 ];
 
+// ✅ VALIDADOR DE ORDEN CORREGIDO (sin servicio_id obligatorio)
 const validarOrden = [
     body('doctor_id')
         .isInt().withMessage('ID de doctor inválido'),
-    body('servicio_id')
-        .isInt().withMessage('ID de servicio inválido'),
     body('total')
         .isFloat({ min: 0 }).withMessage('Total debe ser un número positivo'),
+    body('detalles')
+        .optional()
+        .isArray().withMessage('Detalles debe ser un array'),
     body('fecha_limite')
         .optional()
         .isDate().withMessage('Fecha límite inválida'),
@@ -73,5 +76,5 @@ module.exports = {
     validarLogin,
     validarOrden,
     validarPago,
-    validarServicio  // ✅ YA ESTÁ AQUÍ
+    validarServicio
 };

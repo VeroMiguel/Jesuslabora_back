@@ -1,5 +1,6 @@
-// ordenController.js - VERSIÓN COMPLETA Y CORREGIDA
-const { Orden, Doctor, Servicio, Pago, DetalleOrden, sequelize, Op } = require('../models');
+// ordenController.js - VERSIÓN CORREGIDA
+const { Orden, Doctor, Servicio, Pago, DetalleOrden, sequelize } = require('../models');
+const { Op } = require('sequelize');  // ✅ IMPORTACIÓN CORRECTA
 const logger = require('../utils/logger');
 const fileService = require('../services/fileService');
 
@@ -7,7 +8,7 @@ const fileService = require('../services/fileService');
 // MÉTODOS ACTUALIZADOS (CON DETALLES)
 // ============================================
 
-// Obtener órdenes (incluyendo detalles)
+// ordenController.js - MODIFICAR obtenerOrdenes
 const obtenerOrdenes = async (req, res) => {
     try {
         const ordenes = await Orden.findAll({
@@ -25,7 +26,7 @@ const obtenerOrdenes = async (req, res) => {
     }
 };
 
-// Obtener orden por ID (con detalles)
+// ordenController.js - MODIFICAR obtenerOrdenPorId
 const obtenerOrdenPorId = async (req, res) => {
     try {
         const { id } = req.params;
@@ -43,7 +44,6 @@ const obtenerOrdenPorId = async (req, res) => {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
         
-        // Calcular total pagado y saldo
         const totalPagado = orden.pagos?.reduce((sum, pago) => sum + Number(pago.monto), 0) || 0;
         const saldo = Number(orden.total) - totalPagado;
         
@@ -69,12 +69,10 @@ const crearOrden = async (req, res) => {
         
         const { detalles, doctor_id, pago_inicial, cliente_nombre, detalle_cliente, prioridad, metodo_pago } = req.body;
         
-        // Validar detalles
         if (!detalles || !Array.isArray(detalles) || detalles.length === 0) {
             return res.status(400).json({ error: 'Debe agregar al menos un servicio' });
         }
         
-        // Validar cada detalle
         for (const det of detalles) {
             if (!det.servicio_id || !det.precio_unitario || det.precio_unitario <= 0) {
                 return res.status(400).json({ error: 'Cada servicio debe tener precio válido' });
@@ -84,19 +82,16 @@ const crearOrden = async (req, res) => {
             }
         }
         
-        // Calcular total sumando subtotales
         let total = 0;
         for (const det of detalles) {
             total += det.cantidad * det.precio_unitario;
         }
         
-        // Procesar imagen de referencia si existe
         let imagen_referencia_url = null;
         if (req.file) {
             imagen_referencia_url = await fileService.saveFile(req.file, 'ordenes');
         }
         
-        // Crear orden
         const orden = await Orden.create({
             doctor_id,
             total: total,
@@ -108,7 +103,6 @@ const crearOrden = async (req, res) => {
             imagen_referencia_url: imagen_referencia_url
         }, { transaction });
         
-        // Crear detalles
         for (const det of detalles) {
             await DetalleOrden.create({
                 orden_id: orden.id,
@@ -120,7 +114,6 @@ const crearOrden = async (req, res) => {
             }, { transaction });
         }
         
-        // Pago inicial
         if (pago_inicial && parseFloat(pago_inicial) > 0) {
             await Pago.create({
                 orden_id: orden.id,
@@ -133,7 +126,6 @@ const crearOrden = async (req, res) => {
         
         await transaction.commit();
         
-        // Recargar orden con relaciones
         const ordenCompleta = await Orden.findByPk(orden.id, {
             include: [
                 { model: Doctor, as: 'doctor', attributes: ['id', 'nombre', 'telefono_whatsapp', 'logo_url'] },
@@ -174,7 +166,6 @@ const actualizarOrden = async (req, res) => {
         
         const { detalles, doctor_id, cliente_nombre, detalle_cliente, prioridad } = req.body;
         
-        // Calcular nuevo total si vienen detalles
         let total = orden.total;
         if (detalles && Array.isArray(detalles) && detalles.length > 0) {
             total = 0;
@@ -183,7 +174,6 @@ const actualizarOrden = async (req, res) => {
             }
         }
         
-        // Procesar imagen si se subió
         let imagen_referencia_url = orden.imagen_referencia_url;
         if (req.file) {
             if (orden.imagen_referencia_url) {
@@ -192,7 +182,6 @@ const actualizarOrden = async (req, res) => {
             imagen_referencia_url = await fileService.saveFile(req.file, 'ordenes');
         }
         
-        // Actualizar orden
         await orden.update({
             doctor_id: doctor_id || orden.doctor_id,
             total: total,
@@ -202,12 +191,9 @@ const actualizarOrden = async (req, res) => {
             imagen_referencia_url: imagen_referencia_url
         }, { transaction });
         
-        // Actualizar detalles (reemplazar todos)
         if (detalles && Array.isArray(detalles) && detalles.length > 0) {
-            // Eliminar detalles existentes
             await DetalleOrden.destroy({ where: { orden_id: id }, transaction });
             
-            // Crear nuevos detalles
             for (const det of detalles) {
                 await DetalleOrden.create({
                     orden_id: id,
@@ -222,7 +208,6 @@ const actualizarOrden = async (req, res) => {
         
         await transaction.commit();
         
-        // Recargar orden actualizada
         const ordenActualizada = await Orden.findByPk(id, {
             include: [
                 { model: Doctor, as: 'doctor' },
@@ -259,7 +244,6 @@ const eliminarOrden = async (req, res) => {
             await fileService.deleteFile(orden.imagen_referencia_url);
         }
         
-        // Los detalles se eliminan automáticamente por CASCADE
         await orden.destroy();
         
         logger.info(`Orden eliminada - ID: ${id}`);
@@ -272,7 +256,7 @@ const eliminarOrden = async (req, res) => {
 };
 
 // ============================================
-// MÉTODOS EXISTENTES (SIN CAMBIOS - SOLO COPIAR)
+// MÉTODOS EXISTENTES
 // ============================================
 
 const obtenerEstadisticas = async (req, res) => {
@@ -416,39 +400,58 @@ const actualizarImagenReferencia = async (req, res) => {
 };
 
 // ============================================
-// NUEVO MÉTODO PARA EL CALENDARIO
+// NUEVO MÉTODO PARA EL CALENDARIO (CORREGIDO)
 // ============================================
+
+// ordenController.js - MODIFICAR obtenerOrdenesConFiltrosAvanzados
 
 const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
     try {
         const { doctor_id, fecha_inicio, fecha_fin, tipo_fecha, estado } = req.query;
         
+        console.log('📅 Filtros recibidos:', { doctor_id, fecha_inicio, fecha_fin, tipo_fecha, estado });
+        
         const where = {};
         
         if (doctor_id && doctor_id !== 'todos') {
-            where.doctor_id = doctor_id;
+            where.doctor_id = parseInt(doctor_id);
         }
         
         if (estado && estado !== 'todos') {
             where.estado = estado;
         }
         
-        if (fecha_inicio && fecha_fin) {
-            const campoFecha = tipo_fecha === 'limite' ? 'fecha_limite' : 'fecha_registro';
-            where[campoFecha] = {
-                [Op.between]: [fecha_inicio, fecha_fin]
+        // ✅ MODIFICADO: Usar include con where para filtrar por detalles
+        const includeOptions = [
+            { model: Doctor, as: 'doctor', attributes: ['id', 'nombre', 'telefono_whatsapp', 'logo_url'] },
+            { model: DetalleOrden, as: 'detalles', include: [{ model: Servicio, as: 'servicio' }] },
+            { model: Pago, as: 'pagos', required: false }
+        ];
+        
+        // ✅ Si hay filtro de fechas, aplicarlo a los detalles
+        if (fecha_inicio && fecha_fin && tipo_fecha === 'limite') {
+            includeOptions[1].where = {
+                fecha_limite: {
+                    [Op.between]: [fecha_inicio, fecha_fin]
+                }
             };
         }
         
-        const ordenes = await Orden.findAll({
+        let ordenes = await Orden.findAll({
             where,
-            include: [
-                { model: Doctor, as: 'doctor', attributes: ['id', 'nombre', 'telefono_whatsapp', 'logo_url'] },
-                { model: DetalleOrden, as: 'detalles', include: [{ model: Servicio, as: 'servicio' }] },
-                { model: Pago, as: 'pagos', required: false }
-            ],
-            order: [[tipo_fecha === 'limite' ? 'fecha_limite' : 'fecha_registro', 'ASC']]
+            include: includeOptions,
+            order: [['fecha_registro', 'DESC']]
         });
+        
+        // ✅ Si no hay filtro de fechas o es por fecha_registro, filtrar después
+        if (fecha_inicio && fecha_fin && tipo_fecha === 'registro') {
+            ordenes = ordenes.filter(orden => {
+                const fechaRegistro = orden.fecha_registro?.split('T')[0];
+                return fechaRegistro >= fecha_inicio && fechaRegistro <= fecha_fin;
+            });
+        }
+        
+        console.log(`✅ Encontradas ${ordenes.length} órdenes`);
         
         const ordenesConSaldo = ordenes.map(orden => {
             const totalPagado = orden.pagos?.reduce((sum, pago) => sum + Number(pago.monto), 0) || 0;

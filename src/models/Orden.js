@@ -1,3 +1,4 @@
+// models/Orden.js - MODIFICAR servicio_id para que sea nullable
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
@@ -20,7 +21,7 @@ const Orden = sequelize.define('Orden', {
     },
     servicio_id: {
         type: DataTypes.INTEGER,
-        allowNull: false,
+        allowNull: true,  // ✅ CAMBIAR DE false a true
         references: {
             model: 'servicios',
             key: 'id'
@@ -68,11 +69,11 @@ const Orden = sequelize.define('Orden', {
     cliente_nombre: {
         type: DataTypes.TEXT
     },
-    detalle_cliente: {  // <-- NUEVO CAMPO
+    detalle_cliente: {
         type: DataTypes.TEXT,
         allowNull: true
     },
-     imagen_referencia_url: {
+    imagen_referencia_url: {
         type: DataTypes.TEXT,
         allowNull: true
     }
