@@ -1,4 +1,4 @@
-// ordenRoutes.js - VERSIÓN CORREGIDA
+// ordenRoutes.js - VERSIÓN COMPLETA Y CORREGIDA
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -16,15 +16,25 @@ const {
     obtenerFechaServidor,
     actualizarImagenReferencia,
     obtenerFechaHoraServidor,
-    obtenerOrdenesConFiltrosAvanzados  // ← IMPORTAR ESTE
+    obtenerOrdenesConFiltrosAvanzados,
+    actualizarImagenDetalle,
+    eliminarImagenDetalle
 } = require('../controllers/ordenController');
 const { autenticar, autorizar } = require('../middleware/auth');
 const { validarOrden } = require('../middleware/validator');
 
-// Configuración de multer...
+// Configuración de multer
 const storage = multer.diskStorage({
     destination: async (req, file, cb) => {
-        const uploadDir = path.join(__dirname, '../../uploads/ordenes');
+        let uploadDir;
+        
+        // Determinar directorio según la ruta
+        if (req.originalUrl.includes('/detalles/')) {
+            uploadDir = path.join(__dirname, '../../uploads/detalles');
+        } else {
+            uploadDir = path.join(__dirname, '../../uploads/ordenes');
+        }
+        
         await fs.ensureDir(uploadDir);
         cb(null, uploadDir);
     },
@@ -49,29 +59,36 @@ const upload = multer({
 });
 
 // ============================================
-// PRIMERO las rutas ESPECÍFICAS (sin parámetros dinámicos)
+// PRIMERO: RUTAS ESPECÍFICAS (sin parámetros dinámicos)
 // ============================================
 router.get('/estadisticas', autenticar, obtenerEstadisticas);
 router.get('/ingresos/mensuales', autenticar, obtenerIngresosMensuales);
 router.get('/server-time', autenticar, obtenerFechaServidor);
 router.get('/server-datetime', autenticar, obtenerFechaHoraServidor);
 
-// ✅ NUEVA RUTA - FILTROS AVANZADOS (DEBE ir ANTES de /:id)
+// Ruta para filtros avanzados (DEBE ir ANTES de /:id)
 router.get('/filtros-avanzados', autenticar, obtenerOrdenesConFiltrosAvanzados);
 
 // ============================================
-// LUEGO las rutas con parámetros
+// NUEVAS RUTAS PARA DETALLES (IMÁGENES POR SERVICIO)
+// ============================================
+router.post('/detalles/:detalleId/imagen', autenticar, upload.single('imagen'), actualizarImagenDetalle);
+router.delete('/detalles/:detalleId/imagen', autenticar, eliminarImagenDetalle);
+
+// ============================================
+// LUEGO: RUTAS CON PARÁMETROS
 // ============================================
 router.get('/', autenticar, obtenerOrdenes);
 router.get('/:id', autenticar, obtenerOrdenPorId);
 
-// Rutas POST y PUT
-// ✅ Comentar validarOrden temporalmente
+// ============================================
+// RUTAS POST, PUT Y DELETE
+// ============================================
 router.post('/', autenticar, upload.single('imagen_referencia'), crearOrden);
 router.put('/:id', autenticar, upload.single('imagen_referencia'), actualizarOrden);
 router.delete('/:id', autenticar, autorizar('admin'), eliminarOrden);
 
-// Subir imagen de referencia
+// Subir imagen de referencia para orden completa (mantener por compatibilidad)
 router.post('/:id/imagen-referencia', autenticar, upload.single('imagen'), actualizarImagenReferencia);
 
 module.exports = router;

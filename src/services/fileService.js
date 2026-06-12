@@ -1,3 +1,4 @@
+// fileService.js - VERSIÓN COMPLETA
 const fs = require('fs-extra');
 const path = require('path');
 const config = require('../config/config');
@@ -6,8 +7,9 @@ class FileService {
     constructor() {
         this.uploadDir = path.join(__dirname, '../../', config.uploadDir);
         this.doctoresDir = path.join(this.uploadDir, 'doctores');
-         this.serviciosDir = path.join(this.uploadDir, 'servicios');
-        this.ordenesDir = path.join(this.uploadDir, 'ordenes');  // <-- NUEVO
+        this.serviciosDir = path.join(this.uploadDir, 'servicios');
+        this.ordenesDir = path.join(this.uploadDir, 'ordenes');
+        this.detallesDir = path.join(this.uploadDir, 'detalles');  // ← NUEVO para imágenes por servicio
         this.tempDir = path.join(this.uploadDir, 'temp');
         
         // Asegurar que los directorios existen
@@ -16,15 +18,19 @@ class FileService {
 
     ensureDirectories() {
         fs.ensureDirSync(this.doctoresDir);
-            fs.ensureDirSync(this.serviciosDir);
-           fs.ensureDirSync(this.ordenesDir);
+        fs.ensureDirSync(this.serviciosDir);
+        fs.ensureDirSync(this.ordenesDir);
+        fs.ensureDirSync(this.detallesDir);  // ← NUEVO
         fs.ensureDirSync(this.tempDir);
     }
 
     // Guardar archivo y devolver la URL relativa
     async saveFile(file, subfolder = 'doctores') {
         const targetDir = path.join(this.uploadDir, subfolder);
-        // Usar timestamp como nombre del archivo (sin el prefijo temp-)
+        // Asegurar que el subdirectorio existe
+        await fs.ensureDir(targetDir);
+        
+        // Usar timestamp como nombre del archivo
         const fileName = `${Date.now()}${path.extname(file.originalname)}`;
         const filePath = path.join(targetDir, fileName);
         
@@ -43,7 +49,10 @@ class FileService {
         const filePath = path.join(__dirname, '../../', fileUrl.replace(/^\//, ''));
         
         try {
-            await fs.remove(filePath);
+            if (await fs.pathExists(filePath)) {
+                await fs.remove(filePath);
+                console.log(`🗑️ Archivo eliminado: ${filePath}`);
+            }
         } catch (error) {
             console.error('Error eliminando archivo:', error);
         }

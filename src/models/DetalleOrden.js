@@ -1,4 +1,4 @@
-// models/DetalleOrden.js
+// models/DetalleOrden.js - VERSIÓN ACTUALIZADA
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
@@ -45,6 +45,23 @@ const DetalleOrden = sequelize.define('DetalleOrden', {
     hora_limite: {
         type: DataTypes.TIME,
         allowNull: true
+    },
+    // ✅ NUEVOS CAMPOS
+    cliente_nombre: {
+        type: DataTypes.TEXT,
+        allowNull: true
+    },
+    detalle_cliente: {
+        type: DataTypes.TEXT,
+        allowNull: true
+    },
+    imagen_referencia_url: {
+        type: DataTypes.TEXT,
+        allowNull: true
+    },
+    orden: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0
     }
 }, {
     tableName: 'detalles_orden',

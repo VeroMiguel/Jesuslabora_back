@@ -1,14 +1,13 @@
-// ordenController.js - VERSIÓN CORREGIDA
+// ordenController.js - VERSIÓN COMPLETA Y CORREGIDA
 const { Orden, Doctor, Servicio, Pago, DetalleOrden, sequelize } = require('../models');
-const { Op } = require('sequelize');  // ✅ IMPORTACIÓN CORRECTA
+const { Op } = require('sequelize');
 const logger = require('../utils/logger');
 const fileService = require('../services/fileService');
 
 // ============================================
-// MÉTODOS ACTUALIZADOS (CON DETALLES)
+// MÉTODOS PRINCIPALES
 // ============================================
 
-// ordenController.js - MODIFICAR obtenerOrdenes
 const obtenerOrdenes = async (req, res) => {
     try {
         const ordenes = await Orden.findAll({
@@ -26,7 +25,6 @@ const obtenerOrdenes = async (req, res) => {
     }
 };
 
-// ordenController.js - MODIFICAR obtenerOrdenPorId
 const obtenerOrdenPorId = async (req, res) => {
     try {
         const { id } = req.params;
@@ -58,7 +56,7 @@ const obtenerOrdenPorId = async (req, res) => {
     }
 };
 
-// CREAR ORDEN CON MÚLTIPLES SERVICIOS
+// Versión original (mantener para compatibilidad)
 const crearOrden = async (req, res) => {
     const transaction = await sequelize.transaction();
     
@@ -103,17 +101,20 @@ const crearOrden = async (req, res) => {
             imagen_referencia_url: imagen_referencia_url
         }, { transaction });
         
-        for (const det of detalles) {
-            await DetalleOrden.create({
-                orden_id: orden.id,
-                servicio_id: det.servicio_id,
-                cantidad: det.cantidad,
-                precio_unitario: det.precio_unitario,
-                fecha_limite: det.fecha_limite || null,
-                hora_limite: det.hora_limite || null
-            }, { transaction });
-        }
-        
+     for (let i = 0; i < detalles.length; i++) {
+    const det = detalles[i];
+    await DetalleOrden.create({
+        orden_id: orden.id,
+        servicio_id: det.servicio_id,
+        cantidad: det.cantidad || 1,
+        precio_unitario: det.precio_unitario,
+        fecha_limite: det.fecha_limite || null,
+        hora_limite: det.hora_limite || null,
+        cliente_nombre: det.cliente_nombre || null,      // ✅ AGREGAR
+        detalle_cliente: det.detalle_cliente || null,    // ✅ AGREGAR
+        orden: i
+    }, { transaction });
+}
         if (pago_inicial && parseFloat(pago_inicial) > 0) {
             await Pago.create({
                 orden_id: orden.id,
@@ -148,7 +149,7 @@ const crearOrden = async (req, res) => {
     }
 };
 
-// ACTUALIZAR ORDEN CON MÚLTIPLES SERVICIOS
+// Versión original (mantener para compatibilidad)
 const actualizarOrden = async (req, res) => {
     const transaction = await sequelize.transaction();
     
@@ -194,14 +195,16 @@ const actualizarOrden = async (req, res) => {
         if (detalles && Array.isArray(detalles) && detalles.length > 0) {
             await DetalleOrden.destroy({ where: { orden_id: id }, transaction });
             
-            for (const det of detalles) {
+            for (let i = 0; i < detalles.length; i++) {
+                const det = detalles[i];
                 await DetalleOrden.create({
                     orden_id: id,
                     servicio_id: det.servicio_id,
                     cantidad: det.cantidad || 1,
                     precio_unitario: det.precio_unitario,
                     fecha_limite: det.fecha_limite || null,
-                    hora_limite: det.hora_limite || null
+                    hora_limite: det.hora_limite || null,
+                    orden: i
                 }, { transaction });
             }
         }
@@ -230,7 +233,6 @@ const actualizarOrden = async (req, res) => {
     }
 };
 
-// Eliminar orden
 const eliminarOrden = async (req, res) => {
     try {
         const { id } = req.params;
@@ -256,7 +258,7 @@ const eliminarOrden = async (req, res) => {
 };
 
 // ============================================
-// MÉTODOS EXISTENTES
+// MÉTODOS DE ESTADÍSTICAS
 // ============================================
 
 const obtenerEstadisticas = async (req, res) => {
@@ -339,6 +341,10 @@ const obtenerIngresosMensuales = async (req, res) => {
     }
 };
 
+// ============================================
+// MÉTODOS DE FECHA SERVIDOR
+// ============================================
+
 const obtenerFechaServidor = (req, res) => {
     const ahora = new Date();
     const anio = ahora.getFullYear();
@@ -366,6 +372,10 @@ const obtenerFechaHoraServidor = (req, res) => {
         ahora_militar: `${horas}:${minutos}`
     });
 };
+
+// ============================================
+// IMÁGENES DE REFERENCIA (ORDEN COMPLETA)
+// ============================================
 
 const actualizarImagenReferencia = async (req, res) => {
     try {
@@ -400,10 +410,8 @@ const actualizarImagenReferencia = async (req, res) => {
 };
 
 // ============================================
-// NUEVO MÉTODO PARA EL CALENDARIO (CORREGIDO)
+// CALENDARIO - FILTROS AVANZADOS
 // ============================================
-
-// ordenController.js - MODIFICAR obtenerOrdenesConFiltrosAvanzados
 
 const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
     try {
@@ -421,14 +429,12 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
             where.estado = estado;
         }
         
-        // ✅ MODIFICADO: Usar include con where para filtrar por detalles
         const includeOptions = [
             { model: Doctor, as: 'doctor', attributes: ['id', 'nombre', 'telefono_whatsapp', 'logo_url'] },
             { model: DetalleOrden, as: 'detalles', include: [{ model: Servicio, as: 'servicio' }] },
             { model: Pago, as: 'pagos', required: false }
         ];
         
-        // ✅ Si hay filtro de fechas, aplicarlo a los detalles
         if (fecha_inicio && fecha_fin && tipo_fecha === 'limite') {
             includeOptions[1].where = {
                 fecha_limite: {
@@ -443,7 +449,6 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
             order: [['fecha_registro', 'DESC']]
         });
         
-        // ✅ Si no hay filtro de fechas o es por fecha_registro, filtrar después
         if (fecha_inicio && fecha_fin && tipo_fecha === 'registro') {
             ordenes = ordenes.filter(orden => {
                 const fechaRegistro = orden.fecha_registro?.split('T')[0];
@@ -471,6 +476,80 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
 };
 
 // ============================================
+// NUEVOS MÉTODOS PARA IMÁGENES POR SERVICIO
+// ============================================
+
+const actualizarImagenDetalle = async (req, res) => {
+    try {
+        const { detalleId } = req.params;
+        
+        if (!req.usuario || !req.usuario.id) {
+            return res.status(401).json({ error: 'Usuario no autenticado' });
+        }
+        
+        const detalle = await DetalleOrden.findByPk(detalleId);
+        
+        if (!detalle) {
+            return res.status(404).json({ error: 'Detalle no encontrado' });
+        }
+        
+        if (!req.file) {
+            return res.status(400).json({ error: 'No se proporcionó ninguna imagen' });
+        }
+        
+        const imagen_url = await fileService.saveFile(req.file, 'detalles');
+        
+        if (detalle.imagen_referencia_url) {
+            await fileService.deleteFile(detalle.imagen_referencia_url);
+        }
+        
+        detalle.imagen_referencia_url = imagen_url;
+        await detalle.save();
+        
+        res.json({
+            mensaje: 'Imagen de referencia actualizada correctamente',
+            imagen_url: detalle.imagen_referencia_url,
+            detalle_id: detalle.id
+        });
+        
+    } catch (error) {
+        logger.error('Error actualizando imagen de detalle:', error);
+        res.status(500).json({ error: 'Error al actualizar la imagen', details: error.message });
+    }
+};
+
+const eliminarImagenDetalle = async (req, res) => {
+    try {
+        const { detalleId } = req.params;
+        
+        if (!req.usuario || !req.usuario.id) {
+            return res.status(401).json({ error: 'Usuario no autenticado' });
+        }
+        
+        const detalle = await DetalleOrden.findByPk(detalleId);
+        
+        if (!detalle) {
+            return res.status(404).json({ error: 'Detalle no encontrado' });
+        }
+        
+        if (detalle.imagen_referencia_url) {
+            await fileService.deleteFile(detalle.imagen_referencia_url);
+            detalle.imagen_referencia_url = null;
+            await detalle.save();
+        }
+        
+        res.json({ 
+            mensaje: 'Imagen eliminada correctamente',
+            detalle_id: detalle.id
+        });
+        
+    } catch (error) {
+        logger.error('Error eliminando imagen de detalle:', error);
+        res.status(500).json({ error: 'Error al eliminar la imagen' });
+    }
+};
+
+// ============================================
 // EXPORTACIÓN
 // ============================================
 
@@ -485,5 +564,7 @@ module.exports = {
     obtenerFechaServidor,
     obtenerFechaHoraServidor,
     actualizarImagenReferencia,
-    obtenerOrdenesConFiltrosAvanzados
+    obtenerOrdenesConFiltrosAvanzados,
+    actualizarImagenDetalle,
+    eliminarImagenDetalle
 };

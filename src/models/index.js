@@ -89,25 +89,30 @@ TokenFCM.belongsTo(Usuario, {
     as: 'usuario'
 });
 
-// AGREGAR RELACIONES
+// models/index.js - MODIFICAR LAS ASOCIACIONES
+
+// AGREGAR RELACIONES - Cambiar el nombre de 'orden' a 'ordenPrincipal' o algo similar
 Orden.hasMany(DetalleOrden, { 
     foreignKey: 'orden_id', 
     as: 'detalles',
     onDelete: 'CASCADE'
 });
+
+// ✅ CAMBIAR 'orden' por 'ordenPrincipal' para evitar conflicto con la columna 'orden'
 DetalleOrden.belongsTo(Orden, { 
     foreignKey: 'orden_id', 
-    as: 'orden'
+    as: 'ordenPrincipal'
 });
+
 DetalleOrden.belongsTo(Servicio, { 
     foreignKey: 'servicio_id', 
     as: 'servicio'
 });
+
 Servicio.hasMany(DetalleOrden, { 
     foreignKey: 'servicio_id', 
     as: 'detalles_orden'
 });
-
 
 
 
