@@ -114,10 +114,6 @@ Servicio.hasMany(DetalleOrden, {
     as: 'detalles_orden'
 });
 
-
-
-
-
 module.exports = {
     sequelize,
     Usuario,

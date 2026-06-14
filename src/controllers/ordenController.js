@@ -149,7 +149,8 @@ const crearOrden = async (req, res) => {
     }
 };
 
-// Versión original (mantener para compatibilidad)
+// ordenController.js - REEMPLAZAR el método actualizarOrden completo
+
 const actualizarOrden = async (req, res) => {
     const transaction = await sequelize.transaction();
     
@@ -159,53 +160,97 @@ const actualizarOrden = async (req, res) => {
         }
         
         const { id } = req.params;
-        const orden = await Orden.findByPk(id);
+        const orden = await Orden.findByPk(id, {
+            include: [{ model: DetalleOrden, as: 'detalles' }]
+        });
         
         if (!orden) {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
         
-        const { detalles, doctor_id, cliente_nombre, detalle_cliente, prioridad } = req.body;
+        const { detalles, doctor_id, cliente_nombre, detalle_cliente, prioridad, pago_inicial } = req.body;
         
-        let total = orden.total;
+        // ✅ Guardar detalles antiguos para conservar imágenes
+        const detallesAntiguos = orden.detalles || [];
+        const mapaImagenesAntiguas = new Map();
+        detallesAntiguos.forEach(det => {
+            if (det.imagen_referencia_url) {
+                mapaImagenesAntiguas.set(det.servicio_id, det.imagen_referencia_url);
+            }
+        });
+        
+        // ✅ Calcular total correctamente (usar precio_unitario, no cantidad * precio)
+        let total = 0;
         if (detalles && Array.isArray(detalles) && detalles.length > 0) {
-            total = 0;
             for (const det of detalles) {
-                total += det.cantidad * det.precio_unitario;
+                const precio = Number(det.precio_unitario) || 0;
+                total += precio;
             }
+        } else {
+            total = orden.total;
         }
         
-        let imagen_referencia_url = orden.imagen_referencia_url;
-        if (req.file) {
-            if (orden.imagen_referencia_url) {
-                await fileService.deleteFile(orden.imagen_referencia_url);
-            }
-            imagen_referencia_url = await fileService.saveFile(req.file, 'ordenes');
-        }
-        
+        // ✅ Actualizar orden
         await orden.update({
             doctor_id: doctor_id || orden.doctor_id,
             total: total,
             prioridad: prioridad || orden.prioridad,
             cliente_nombre: cliente_nombre !== undefined ? cliente_nombre : orden.cliente_nombre,
             detalle_cliente: detalle_cliente !== undefined ? detalle_cliente : orden.detalle_cliente,
-            imagen_referencia_url: imagen_referencia_url
         }, { transaction });
         
+        // ✅ Actualizar detalles (NO eliminar si no es necesario)
         if (detalles && Array.isArray(detalles) && detalles.length > 0) {
-            await DetalleOrden.destroy({ where: { orden_id: id }, transaction });
+            // Eliminar detalles que ya no existen
+            const nuevosServicioIds = detalles.map(d => d.servicio_id);
+            const detallesAEliminar = detallesAntiguos.filter(det => !nuevosServicioIds.includes(det.servicio_id));
             
+            for (const det of detallesAEliminar) {
+                if (det.imagen_referencia_url) {
+                    await fileService.deleteFile(det.imagen_referencia_url);
+                }
+                await det.destroy({ transaction });
+            }
+            
+            // Actualizar o crear cada detalle
             for (let i = 0; i < detalles.length; i++) {
                 const det = detalles[i];
-                await DetalleOrden.create({
-                    orden_id: id,
-                    servicio_id: det.servicio_id,
-                    cantidad: det.cantidad || 1,
-                    precio_unitario: det.precio_unitario,
-                    fecha_limite: det.fecha_limite || null,
-                    hora_limite: det.hora_limite || null,
-                    orden: i
-                }, { transaction });
+                const detalleExistente = detallesAntiguos.find(d => d.servicio_id === det.servicio_id);
+                
+                // ✅ Conservar imagen antigua si no se subió una nueva
+                let imagenUrl = det.imagen_referencia_url || null;
+                if (!imagenUrl && detalleExistente?.imagen_referencia_url) {
+                    imagenUrl = detalleExistente.imagen_referencia_url;
+                }
+                
+                if (detalleExistente) {
+                    // Actualizar existente
+                    await detalleExistente.update({
+                        servicio_id: det.servicio_id,
+                        cantidad: det.cantidad || 1,
+                        precio_unitario: det.precio_unitario,
+                        fecha_limite: det.fecha_limite || null,
+                        hora_limite: det.hora_limite || null,
+                        cliente_nombre: det.cliente_nombre || null,
+                        detalle_cliente: det.detalle_cliente || null,
+                        imagen_referencia_url: imagenUrl,
+                        orden: i
+                    }, { transaction });
+                } else {
+                    // Crear nuevo
+                    await DetalleOrden.create({
+                        orden_id: id,
+                        servicio_id: det.servicio_id,
+                        cantidad: det.cantidad || 1,
+                        precio_unitario: det.precio_unitario,
+                        fecha_limite: det.fecha_limite || null,
+                        hora_limite: det.hora_limite || null,
+                        cliente_nombre: det.cliente_nombre || null,
+                        detalle_cliente: det.detalle_cliente || null,
+                        imagen_referencia_url: imagenUrl,
+                        orden: i
+                    }, { transaction });
+                }
             }
         }
         
@@ -413,6 +458,8 @@ const actualizarImagenReferencia = async (req, res) => {
 // CALENDARIO - FILTROS AVANZADOS
 // ============================================
 
+// ordenController.js - Modificar obtenerOrdenesConFiltrosAvanzados
+
 const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
     try {
         const { doctor_id, fecha_inicio, fecha_fin, tipo_fecha, estado } = req.query;
@@ -449,10 +496,25 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
             order: [['fecha_registro', 'DESC']]
         });
         
+        // ✅ CORREGIDO: Manejar fecha_registro correctamente
         if (fecha_inicio && fecha_fin && tipo_fecha === 'registro') {
+            const fechaInicioDate = new Date(fecha_inicio);
+            const fechaFinDate = new Date(fecha_fin);
+            
             ordenes = ordenes.filter(orden => {
-                const fechaRegistro = orden.fecha_registro?.split('T')[0];
-                return fechaRegistro >= fecha_inicio && fechaRegistro <= fecha_fin;
+                let fechaRegistro = orden.fecha_registro;
+                
+                // ✅ Si es objeto Date, convertir a string YYYY-MM-DD
+                if (fechaRegistro instanceof Date) {
+                    fechaRegistro = fechaRegistro.toISOString().split('T')[0];
+                } else if (typeof fechaRegistro === 'string') {
+                    fechaRegistro = fechaRegistro.split('T')[0];
+                }
+                
+                if (!fechaRegistro) return false;
+                
+                const fechaRegistroDate = new Date(fechaRegistro);
+                return fechaRegistroDate >= fechaInicioDate && fechaRegistroDate <= fechaFinDate;
             });
         }
         
