@@ -7,7 +7,9 @@ const {
     getReporteMorosidad,
     getReporteProductividad,
     exportarReporte,
-    getTendenciaMensual
+    getTendenciaMensual,
+    exportarReportePorDoctor
+    
 } = require('../controllers/reporteController');
 const { autenticar } = require('../middleware/auth');
 
@@ -18,4 +20,7 @@ router.get('/morosidad', autenticar, getReporteMorosidad);
 router.get('/productividad', autenticar, getReporteProductividad);
 router.get('/exportar/:tipo', autenticar, exportarReporte);
 router.get('/tendencia-mensual', autenticar, getTendenciaMensual);
+// Agregar esta línea en reporteRoutes.js
+router.get('/exportar/doctor/:doctorId', autenticar, exportarReportePorDoctor);
+
 module.exports = router;
