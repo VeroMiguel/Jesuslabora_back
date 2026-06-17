@@ -17,6 +17,8 @@ const doctorRoutes = require('./routes/doctorRoutes');
 const servicioRoutes = require('./routes/servicioRoutes');
 const pagoRoutes = require('./routes/pagoRoutes');
 const reporteRoutes = require('./routes/reporteRoutes');
+
+// ✅ CREAR app PRIMERO
 const app = express();
 
 // Configuración de trust proxy para Railway
@@ -129,12 +131,16 @@ app.use('/api/auth', authRoutes);
 // ============================================
 // Después de otras rutas
 const notificacionesRoutes = require('./routes/notificacionesRoutes');
-app.use('/api/notificaciones',autenticar, notificacionesRoutes);
+app.use('/api/notificaciones', autenticar, notificacionesRoutes);
 app.use('/api/ordenes', autenticar, ordenRoutes);
 app.use('/api/doctores', autenticar, doctorRoutes);
 app.use('/api/servicios', autenticar, servicioRoutes);
 app.use('/api/pagos', autenticar, pagoRoutes);
 app.use('/api/reportes', autenticar, reporteRoutes);
+
+// app.js - La ruta completa maneja la autenticación internamente
+const logoRoutes = require('./routes/logoRoutes');
+app.use('/api/configuracion', logoRoutes);  // ✅ GET es público, POST/DELETE protegidos
 
 // ============================================
 // 5. MANEJADORES DE ERRORES
