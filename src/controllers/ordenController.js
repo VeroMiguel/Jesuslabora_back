@@ -306,19 +306,52 @@ const eliminarOrden = async (req, res) => {
 // MÉTODOS DE ESTADÍSTICAS
 // ============================================
 
+// ordenController.js - REEMPLAZAR obtenerEstadisticas
+
 const obtenerEstadisticas = async (req, res) => {
     try {
-        const ordenesActivas = await Orden.count({ where: { estado: 'pendiente' } });
+        // ✅ Obtener fecha/hora actual del servidor
+        const ahora = new Date();
+        const fechaActual = ahora.toISOString().split('T')[0];
+        const horaActual = ahora.toTimeString().slice(0, 8);
         
-        const ordenesVencidas = await sequelize.query(`
-            SELECT COUNT(*) as total FROM ordenes o
-            WHERE o.estado = 'pendiente' 
-              AND o.fecha_limite <= CURDATE()
-              AND (o.total - COALESCE((SELECT SUM(p.monto) FROM pagos p WHERE p.orden_id = o.id), 0)) > 0
+        console.log('📊 [DEBUG] Fecha actual:', fechaActual, 'Hora:', horaActual);
+        
+        // ✅ Contar órdenes activas (pendientes con saldo > 0)
+        const ordenesActivas = await sequelize.query(`
+            SELECT COUNT(DISTINCT o.id) as total
+            FROM ordenes o
+            WHERE o.estado = 'pendiente'
+            AND (o.total - COALESCE((
+                SELECT SUM(p.monto) 
+                FROM pagos p 
+                WHERE p.orden_id = o.id
+            ), 0)) > 0
         `, { type: sequelize.QueryTypes.SELECT });
+        
+        // ✅ Contar órdenes vencidas (al menos un servicio vencido)
+        const ordenesVencidas = await sequelize.query(`
+            SELECT COUNT(DISTINCT o.id) as total
+            FROM ordenes o
+            JOIN detalles_orden do ON o.id = do.orden_id
+            WHERE o.estado = 'pendiente'
+            AND (o.total - COALESCE((
+                SELECT SUM(p.monto) 
+                FROM pagos p 
+                WHERE p.orden_id = o.id
+            ), 0)) > 0
+            AND (
+                do.fecha_limite < :fechaActual
+                OR (do.fecha_limite = :fechaActual AND do.hora_limite <= :horaActual)
+            )
+        `, { 
+            replacements: { fechaActual, horaActual },
+            type: sequelize.QueryTypes.SELECT 
+        });
         
         const ordenesTerminadas = await Orden.count({ where: { estado: 'terminado' } });
         
+        // Caja hoy
         const cajaHoyResult = await sequelize.query(`
             SELECT COALESCE(SUM(monto), 0) as total 
             FROM pagos 
@@ -326,6 +359,7 @@ const obtenerEstadisticas = async (req, res) => {
         `, { type: sequelize.QueryTypes.SELECT });
         const cajaHoy = parseFloat(cajaHoyResult[0]?.total || 0);
         
+        // Caja semana
         const cajaSemanaResult = await sequelize.query(`
             SELECT COALESCE(SUM(monto), 0) as total 
             FROM pagos 
@@ -333,13 +367,17 @@ const obtenerEstadisticas = async (req, res) => {
         `, { type: sequelize.QueryTypes.SELECT });
         const cajaSemana = parseFloat(cajaSemanaResult[0]?.total || 0);
         
-        res.json({
-            ordenes_activas: ordenesActivas,
-            ordenes_vencidas: ordenesVencidas[0]?.total || 0,
+        const result = {
+            ordenes_activas: parseInt(ordenesActivas[0]?.total) || 0,
+            ordenes_vencidas: parseInt(ordenesVencidas[0]?.total) || 0,
             ordenes_terminadas: ordenesTerminadas,
             caja_hoy: cajaHoy,
             caja_semana: cajaSemana
-        });
+        };
+        
+        console.log('📊 [DEBUG] Estadísticas:', JSON.stringify(result, null, 2));
+        
+        res.json(result);
     } catch (error) {
         logger.error('Error obteniendo estadísticas:', error);
         res.status(500).json({ error: 'Error al obtener estadísticas', details: error.message });

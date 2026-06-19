@@ -95,16 +95,18 @@ const getReporteIngresos = async (req, res) => {
 // ============================================
 // REPORTE DE DOCTORES (usando detalles_orden)
 // ============================================
-// reporteController.js - CORREGIR getReporteDoctores (versión simplificada)
-
-// reporteController.js - CORREGIR getReporteDoctores (versión definitiva)
-
-// reporteController.js - Agregar logs en getReporteDoctores
+// reporteController.js - REEMPLAZAR getReporteDoctores
 
 const getReporteDoctores = async (req, res) => {
     try {
-        console.log('🔍 [DEBUG] Iniciando getReporteDoctores');
+        // ✅ Obtener fecha/hora actual del servidor
+        const ahora = new Date();
+        const fechaActual = ahora.toISOString().split('T')[0];
+        const horaActual = ahora.toTimeString().slice(0, 8);
         
+        console.log('🔍 [DEBUG] Fecha actual:', fechaActual, 'Hora:', horaActual);
+        
+        // ✅ Obtener datos por doctor con órdenes y detalles
         const doctores = await sequelize.query(`
             SELECT 
                 d.id as doctorId,
@@ -128,32 +130,40 @@ const getReporteDoctores = async (req, res) => {
             WHERE d.activo = TRUE
             GROUP BY d.id, d.nombre, d.telefono_whatsapp, d.logo_url, d.direccion
         `, { type: sequelize.QueryTypes.SELECT });
-
-        console.log('📊 [DEBUG] Datos crudos doctores:', JSON.stringify(doctores, null, 2));
-
-        // Calcular deuda_total para cada doctor
-        const doctoresProcesados = doctores.map(d => {
+        
+        // ✅ Procesar cada doctor para calcular vencidas
+        const doctoresProcesados = await Promise.all(doctores.map(async (d) => {
+            // ✅ Contar órdenes vencidas del doctor
+            const vencidasResult = await sequelize.query(`
+                SELECT COUNT(DISTINCT o.id) as vencidas
+                FROM ordenes o
+                JOIN detalles_orden do ON o.id = do.orden_id
+                WHERE o.doctor_id = :doctorId
+                AND o.estado = 'pendiente'
+                AND (
+                    do.fecha_limite < :fechaActual
+                    OR (do.fecha_limite = :fechaActual AND do.hora_limite <= :horaActual)
+                )
+            `, { 
+                replacements: { doctorId: d.doctorId, fechaActual, horaActual },
+                type: sequelize.QueryTypes.SELECT 
+            });
+            
             const facturado = parseFloat(d.total_facturado) || 0;
             const pagado = parseFloat(d.total_pagado) || 0;
             const deuda = facturado - pagado;
-            
-            console.log(`📊 [DEBUG] Doctor: ${d.doctor}`);
-            console.log(`   - total_facturado: ${facturado}`);
-            console.log(`   - total_pagado: ${pagado}`);
-            console.log(`   - deuda_total: ${deuda}`);
             
             return {
                 ...d,
                 total_facturado: facturado,
                 total_pagado: pagado,
-                deuda_total: deuda
+                deuda_total: deuda,
+                ordenes_vencidas: vencidasResult[0]?.vencidas || 0
             };
-        });
-
+        }));
+        
         const deudaTotal = doctoresProcesados.reduce((sum, d) => sum + d.deuda_total, 0);
         
-        console.log(`📊 [DEBUG] Deuda total doctores: ${deudaTotal}`);
-
         res.json({
             doctores: doctoresProcesados,
             totalDoctores: doctoresProcesados.length,
@@ -195,103 +205,211 @@ const getReporteServicios = async (req, res) => {
 // ============================================
 // REPORTE DE MOROSIDAD (usando detalles_orden)
 // ============================================
-
-
-// reporteController.js - CORREGIR getReporteMorosidad CON LOGS
-
-// reporteController.js - CORREGIR getReporteMorosidad (usando LEFT JOIN)
-
-// reporteController.js - CORREGIR getReporteMorosidad
-
-// reporteController.js - CORREGIR getReporteMorosidad (versión definitiva)
+// reporteController.js - REEMPLAZAR getReporteMorosidad
 
 const getReporteMorosidad = async (req, res) => {
     try {
-        console.log('🔍 [DEBUG] Iniciando getReporteMorosidad (versión definitiva)');
+        // ✅ Obtener fecha/hora actual del servidor
+        const ahora = new Date();
+        const fechaActual = ahora.toISOString().split('T')[0];
+        const horaActual = ahora.toTimeString().slice(0, 8);
         
-        const deudas = await sequelize.query(`
+        console.log('🔍 [DEBUG] Fecha actual:', fechaActual, 'Hora:', horaActual);
+        
+        // ✅ PRIMERO: Obtener todas las órdenes pendientes con sus detalles
+        const ordenesConDetalles = await sequelize.query(`
             SELECT 
-                d.id as doctorId,
+                o.id as orden_id,
+                o.doctor_id,
+                o.total,
+                o.estado,
+                d.id as doctor_id,
                 d.nombre as doctor,
                 d.telefono_whatsapp as telefono,
-                COUNT(DISTINCT o.id) as ordenes,
-                COUNT(DISTINCT CASE WHEN do.fecha_limite < CURDATE() AND o.estado = 'pendiente' THEN do.id END) as vencidas,
-                COALESCE(SUM(do.precio_unitario * do.cantidad), 0) as total_facturado,
-                COALESCE((
-                    SELECT SUM(p.monto) 
-                    FROM pagos p 
-                    WHERE p.orden_id = o.id
-                ), 0) as total_pagado,
-                DATEDIFF(CURDATE(), MIN(do.fecha_limite)) as diasMora
-            FROM doctores d
-            JOIN ordenes o ON d.id = o.doctor_id
+                do.id as detalle_id,
+                do.fecha_limite,
+                do.hora_limite,
+                do.precio_unitario,
+                do.cantidad
+            FROM ordenes o
+            JOIN doctores d ON o.doctor_id = d.id
             JOIN detalles_orden do ON o.id = do.orden_id
             WHERE o.estado = 'pendiente'
-            GROUP BY d.id, d.nombre, d.telefono_whatsapp, o.id
+            AND d.activo = TRUE
         `, { type: sequelize.QueryTypes.SELECT });
-
-        console.log('📊 [DEBUG] Datos con GROUP BY o.id:', JSON.stringify(deudas, null, 2));
-
-        // Agrupar manualmente por doctor
-        const doctoresMap = new Map();
-
-        for (const row of deudas) {
-            const doctorId = row.doctorId;
-            if (!doctoresMap.has(doctorId)) {
-                doctoresMap.set(doctorId, {
-                    doctorId: row.doctorId,
+        
+        console.log(`📊 [DEBUG] Órdenes con detalles encontradas: ${ordenesConDetalles.length}`);
+        
+        // ✅ Agrupar por orden y determinar si está vencida
+        const ordenesMap = new Map();
+        
+        for (const row of ordenesConDetalles) {
+            const ordenId = row.orden_id;
+            
+            if (!ordenesMap.has(ordenId)) {
+                ordenesMap.set(ordenId, {
+                    orden_id: ordenId,
+                    doctor_id: row.doctor_id,
                     doctor: row.doctor,
                     telefono: row.telefono,
-                    ordenes: 0,
-                    vencidas: 0,
-                    total_facturado: 0,
-                    total_pagado: 0,
-                    diasMora: row.diasMora
+                    total: parseFloat(row.total) || 0,
+                    detalles: [],
+                    tieneVencido: false
                 });
             }
-
-            const doctorData = doctoresMap.get(doctorId);
-            doctorData.ordenes += Number(row.ordenes) || 0;
-            doctorData.vencidas += Number(row.vencidas) || 0;
-            doctorData.total_facturado += Number(row.total_facturado) || 0;
-            doctorData.total_pagado += Number(row.total_pagado) || 0;
+            
+            const ordenData = ordenesMap.get(ordenId);
+            
+            // ✅ Verificar si este detalle está vencido
+            let detalleVencido = false;
+            if (row.fecha_limite) {
+                const [year, month, day] = row.fecha_limite.split('-').map(Number);
+                let horas = 23, minutos = 59, segundos = 59;
+                
+                if (row.hora_limite) {
+                    const parts = row.hora_limite.split(':');
+                    horas = parseInt(parts[0]);
+                    minutos = parseInt(parts[1]);
+                    segundos = 0;
+                }
+                
+                const fechaLimite = new Date(year, month - 1, day, horas, minutos, segundos);
+                const ahoraDate = new Date(fechaActual + 'T' + horaActual);
+                
+                if (fechaLimite.getTime() < ahoraDate.getTime()) {
+                    detalleVencido = true;
+                    ordenData.tieneVencido = true;
+                }
+            }
+            
+            ordenData.detalles.push({
+                detalle_id: row.detalle_id,
+                fecha_limite: row.fecha_limite,
+                hora_limite: row.hora_limite,
+                precio_unitario: parseFloat(row.precio_unitario) || 0,
+                cantidad: parseInt(row.cantidad) || 1,
+                vencido: detalleVencido
+            });
         }
-
-        // Convertir a array y calcular deuda
+        
+        // ✅ Agrupar por doctor
+        const doctoresMap = new Map();
+        
+        for (const [ordenId, orden] of ordenesMap) {
+            const doctorKey = orden.doctor_id;
+            
+            if (!doctoresMap.has(doctorKey)) {
+                doctoresMap.set(doctorKey, {
+                    doctorId: orden.doctor_id,
+                    doctor: orden.doctor,
+                    telefono: orden.telefono || '',
+                    ordenes: [],
+                    total_ordenes: 0,
+                    ordenes_vencidas: 0,
+                    total_facturado: 0,
+                    total_pagado: 0,
+                    diasMora: 0
+                });
+            }
+            
+            const doctorData = doctoresMap.get(doctorKey);
+            doctorData.ordenes.push(orden);
+            doctorData.total_ordenes += 1;
+            
+            // ✅ Calcular facturado (suma de todos los detalles)
+            let facturadoOrden = 0;
+            for (const det of orden.detalles) {
+                facturadoOrden += det.precio_unitario * det.cantidad;
+            }
+            doctorData.total_facturado += facturadoOrden;
+            
+            // ✅ Si la orden tiene al menos un servicio vencido, contar como vencida
+            if (orden.tieneVencido) {
+                doctorData.ordenes_vencidas += 1;
+            }
+        }
+        
+        // ✅ Calcular pagos por doctor
+        for (const [doctorKey, doctorData] of doctoresMap) {
+            const pagosResult = await sequelize.query(`
+                SELECT COALESCE(SUM(p.monto), 0) as total_pagado
+                FROM pagos p
+                JOIN ordenes o ON p.orden_id = o.id
+                WHERE o.doctor_id = :doctorId
+                AND o.estado = 'pendiente'
+            `, { 
+                replacements: { doctorId: doctorKey },
+                type: sequelize.QueryTypes.SELECT 
+            });
+            
+            doctorData.total_pagado = parseFloat(pagosResult[0]?.total_pagado) || 0;
+        }
+        
+        // ✅ Calcular días de mora (promedio de las órdenes vencidas)
+        for (const [doctorKey, doctorData] of doctoresMap) {
+            let totalDias = 0;
+            let countVencidas = 0;
+            
+            for (const orden of doctorData.ordenes) {
+                if (orden.tieneVencido) {
+                    // ✅ Buscar el detalle más antiguo vencido
+                    let fechaMasAntigua = null;
+                    for (const det of orden.detalles) {
+                        if (det.vencido && det.fecha_limite) {
+                            if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
+                                fechaMasAntigua = det.fecha_limite;
+                            }
+                        }
+                    }
+                    
+                    if (fechaMasAntigua) {
+                        const fechaLimite = new Date(fechaMasAntigua);
+                        const ahoraDate = new Date(fechaActual);
+                        const diffTime = ahoraDate.getTime() - fechaLimite.getTime();
+                        const diffDias = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                        totalDias += Math.max(0, diffDias);
+                        countVencidas++;
+                    }
+                }
+            }
+            
+            doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
+        }
+        
+        // ✅ Convertir a array y calcular deuda
         const deudasConDeuda = Array.from(doctoresMap.values())
             .map(d => {
-                const facturado = d.total_facturado;
-                const pagado = d.total_pagado;
-                console.log(`📊 Doctor: ${d.doctor} - facturado: ${facturado}, pagado: ${pagado}, deuda: ${facturado - pagado}`);
+                const deuda = d.total_facturado - d.total_pagado;
                 return {
                     doctorId: d.doctorId,
                     doctor: d.doctor,
                     telefono: d.telefono,
-                    ordenes: d.ordenes,
-                    vencidas: d.vencidas,
-                    deuda: facturado - pagado,
+                    ordenes: d.total_ordenes,
+                    vencidas: d.ordenes_vencidas,
+                    deuda: deuda,
                     diasMora: d.diasMora
                 };
             })
             .filter(d => d.deuda > 0);
-
+        
         deudasConDeuda.sort((a, b) => b.deuda - a.deuda);
-
+        
         const resumen = {
             deudaTotal: deudasConDeuda.reduce((sum, d) => sum + d.deuda, 0),
             clientesMorosos: deudasConDeuda.length,
             ordenesVencidas: deudasConDeuda.reduce((sum, d) => sum + d.vencidas, 0)
         };
-
-        console.log('📊 [DEBUG] Resumen final:', JSON.stringify(resumen, null, 2));
-
+        
+        console.log('📊 [DEBUG] Resumen morosidad (órdenes):', JSON.stringify(resumen, null, 2));
+        console.log('📊 [DEBUG] Detalle:', JSON.stringify(deudasConDeuda, null, 2));
+        
         res.json({
             detalle: deudasConDeuda,
             resumen
         });
 
     } catch (error) {
-        console.error('❌ [DEBUG] Error en reporte de morosidad:', error);
+        logger.error('Error en reporte de morosidad:', error);
         res.status(500).json({ error: 'Error al generar reporte de morosidad' });
     }
 };
@@ -766,31 +884,180 @@ async function getReporteMorosidadData() {
     return resultado;
 }
 
-// reporteController.js - CORREGIR getReporteProductividadData
+// reporteController.js - REEMPLAZAR getReporteMorosidadData
 
-async function getReporteProductividadData() {
-    const rendimiento = await sequelize.query(`
-        SELECT 
-            d.nombre as doctor,
-            COUNT(DISTINCT CASE WHEN o.estado = 'terminado' THEN o.id END) as completadas,
-            COUNT(DISTINCT CASE WHEN o.estado = 'pendiente' THEN o.id END) as pendientes,
-            ROUND(
-                (COUNT(DISTINCT CASE WHEN o.estado = 'terminado' THEN o.id END) * 100.0) / 
-                NULLIF(COUNT(DISTINCT o.id), 0), 2
-            ) as eficiencia
-        FROM doctores d
-        LEFT JOIN ordenes o ON d.id = o.doctor_id
-        WHERE d.activo = TRUE
-        GROUP BY d.nombre
-        ORDER BY eficiencia DESC
-    `, { type: sequelize.QueryTypes.SELECT });
-
-    return rendimiento.map(r => ({
-        doctor: r.doctor,
-        completadas: Number(r.completadas) || 0,
-        pendientes: Number(r.pendientes) || 0,
-        eficiencia: Number(r.eficiencia) || 0
-    }));
+async function getReporteMorosidadData() {
+    try {
+        // ✅ Obtener fecha/hora actual del servidor
+        const ahora = new Date();
+        const fechaActual = ahora.toISOString().split('T')[0];
+        const horaActual = ahora.toTimeString().slice(0, 8);
+        
+        console.log('🔍 [DEBUG EXPORT] Fecha actual:', fechaActual, 'Hora:', horaActual);
+        
+        // ✅ Obtener todas las órdenes pendientes con sus detalles
+        const ordenesConDetalles = await sequelize.query(`
+            SELECT 
+                o.id as orden_id,
+                o.doctor_id,
+                d.nombre as doctor,
+                d.telefono_whatsapp as telefono,
+                do.fecha_limite,
+                do.hora_limite,
+                do.precio_unitario,
+                do.cantidad,
+                (SELECT COALESCE(SUM(p.monto), 0) 
+                 FROM pagos p 
+                 WHERE p.orden_id = o.id) as total_pagado
+            FROM ordenes o
+            JOIN doctores d ON o.doctor_id = d.id
+            JOIN detalles_orden do ON o.id = do.orden_id
+            WHERE o.estado = 'pendiente'
+            AND d.activo = TRUE
+        `, { type: sequelize.QueryTypes.SELECT });
+        
+        console.log(`📊 [DEBUG EXPORT] Órdenes con detalles: ${ordenesConDetalles.length}`);
+        
+        // ✅ Agrupar por orden y determinar si está vencida
+        const ordenesMap = new Map();
+        
+        for (const row of ordenesConDetalles) {
+            const ordenId = row.orden_id;
+            
+            if (!ordenesMap.has(ordenId)) {
+                ordenesMap.set(ordenId, {
+                    orden_id: ordenId,
+                    doctor_id: row.doctor_id,
+                    doctor: row.doctor,
+                    telefono: row.telefono || '',
+                    total_pagado: parseFloat(row.total_pagado) || 0,
+                    detalles: [],
+                    tieneVencido: false
+                });
+            }
+            
+            const ordenData = ordenesMap.get(ordenId);
+            
+            // ✅ Verificar si este detalle está vencido
+            let detalleVencido = false;
+            if (row.fecha_limite) {
+                const [year, month, day] = row.fecha_limite.split('-').map(Number);
+                let horas = 23, minutos = 59, segundos = 59;
+                
+                if (row.hora_limite) {
+                    const parts = row.hora_limite.split(':');
+                    horas = parseInt(parts[0]);
+                    minutos = parseInt(parts[1]);
+                    segundos = 0;
+                }
+                
+                const fechaLimite = new Date(year, month - 1, day, horas, minutos, segundos);
+                const ahoraDate = new Date(fechaActual + 'T' + horaActual);
+                
+                if (fechaLimite.getTime() < ahoraDate.getTime()) {
+                    detalleVencido = true;
+                    ordenData.tieneVencido = true;
+                }
+            }
+            
+            ordenData.detalles.push({
+                fecha_limite: row.fecha_limite,
+                hora_limite: row.hora_limite,
+                precio_unitario: parseFloat(row.precio_unitario) || 0,
+                cantidad: parseInt(row.cantidad) || 1,
+                vencido: detalleVencido
+            });
+        }
+        
+        // ✅ Agrupar por doctor
+        const doctoresMap = new Map();
+        
+        for (const [ordenId, orden] of ordenesMap) {
+            const doctorKey = orden.doctor_id;
+            
+            if (!doctoresMap.has(doctorKey)) {
+                doctoresMap.set(doctorKey, {
+                    doctor: orden.doctor,
+                    telefono: orden.telefono,
+                    ordenes: 0,
+                    vencidas: 0,
+                    total_facturado: 0,
+                    total_pagado: 0,
+                    diasMora: 0
+                });
+            }
+            
+            const doctorData = doctoresMap.get(doctorKey);
+            doctorData.ordenes += 1;
+            
+            // ✅ Calcular facturado (suma de todos los detalles)
+            let facturadoOrden = 0;
+            for (const det of orden.detalles) {
+                facturadoOrden += det.precio_unitario * det.cantidad;
+            }
+            doctorData.total_facturado += facturadoOrden;
+            doctorData.total_pagado += orden.total_pagado;
+            
+            // ✅ Si la orden tiene al menos un servicio vencido, contar como vencida
+            if (orden.tieneVencido) {
+                doctorData.vencidas += 1;
+            }
+        }
+        
+        // ✅ Calcular días de mora
+        for (const [doctorKey, doctorData] of doctoresMap) {
+            let totalDias = 0;
+            let countVencidas = 0;
+            
+            for (const [ordenId, orden] of ordenesMap) {
+                if (orden.doctor_id === doctorKey && orden.tieneVencido) {
+                    // Buscar el detalle más antiguo vencido
+                    let fechaMasAntigua = null;
+                    for (const det of orden.detalles) {
+                        if (det.vencido && det.fecha_limite) {
+                            if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
+                                fechaMasAntigua = det.fecha_limite;
+                            }
+                        }
+                    }
+                    
+                    if (fechaMasAntigua) {
+                        const fechaLimite = new Date(fechaMasAntigua);
+                        const ahoraDate = new Date(fechaActual);
+                        const diffTime = ahoraDate.getTime() - fechaLimite.getTime();
+                        const diffDias = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                        totalDias += Math.max(0, diffDias);
+                        countVencidas++;
+                    }
+                }
+            }
+            
+            doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
+        }
+        
+        // ✅ Convertir a array y calcular deuda
+        const resultado = Array.from(doctoresMap.values())
+            .map(d => {
+                const deuda = d.total_facturado - d.total_pagado;
+                return {
+                    doctor: d.doctor,
+                    telefono: d.telefono || '',
+                    ordenes: d.ordenes,
+                    vencidas: d.vencidas,
+                    deuda: deuda,
+                    diasMora: d.diasMora
+                };
+            })
+            .filter(d => d.deuda > 0);
+        
+        console.log('📊 [DEBUG EXPORT] Resultado morosidad para Excel:', JSON.stringify(resultado, null, 2));
+        
+        return resultado;
+        
+    } catch (error) {
+        logger.error('Error en getReporteMorosidadData:', error);
+        return [];
+    }
 }
 
 async function getTodosReportesData() {
