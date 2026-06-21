@@ -95,7 +95,7 @@ const getReporteIngresos = async (req, res) => {
 // ============================================
 // REPORTE DE DOCTORES (usando detalles_orden)
 // ============================================
-// reporteController.js - REEMPLAZAR getReporteDoctores
+// reporteController.js - MODIFICAR getReporteDoctores
 
 const getReporteDoctores = async (req, res) => {
     try {
@@ -122,8 +122,7 @@ const getReporteDoctores = async (req, res) => {
                     SELECT SUM(p.monto) 
                     FROM pagos p 
                     WHERE p.orden_id = o.id
-                ), 0) as total_pagado,
-                MIN(do.fecha_limite) as proxima_entrega
+                ), 0) as total_pagado
             FROM doctores d
             LEFT JOIN ordenes o ON d.id = o.doctor_id
             LEFT JOIN detalles_orden do ON o.id = do.orden_id
@@ -131,7 +130,7 @@ const getReporteDoctores = async (req, res) => {
             GROUP BY d.id, d.nombre, d.telefono_whatsapp, d.logo_url, d.direccion
         `, { type: sequelize.QueryTypes.SELECT });
         
-        // ✅ Procesar cada doctor para calcular vencidas
+        // ✅ Procesar cada doctor para calcular vencidas y próxima entrega
         const doctoresProcesados = await Promise.all(doctores.map(async (d) => {
             // ✅ Contar órdenes vencidas del doctor
             const vencidasResult = await sequelize.query(`
@@ -149,6 +148,58 @@ const getReporteDoctores = async (req, res) => {
                 type: sequelize.QueryTypes.SELECT 
             });
             
+            // ✅ Calcular PRÓXIMA ENTREGA (fecha más cercana que NO ha vencido)
+            // Si todas están vencidas, mostrar la que venció más tarde
+            let proximaEntrega = null;
+            
+            const fechasDetalles = await sequelize.query(`
+                SELECT 
+                    do.fecha_limite,
+                    do.hora_limite,
+                    do.precio_unitario,
+                    do.cantidad,
+                    o.estado
+                FROM detalles_orden do
+                JOIN ordenes o ON do.orden_id = o.id
+                WHERE o.doctor_id = :doctorId
+                AND o.estado = 'pendiente'
+                AND do.fecha_limite IS NOT NULL
+                ORDER BY do.fecha_limite ASC, do.hora_limite ASC
+            `, { 
+                replacements: { doctorId: d.doctorId },
+                type: sequelize.QueryTypes.SELECT 
+            });
+            
+            // ✅ Buscar la primera fecha NO vencida
+            let fechaMasCercanaFutura = null;
+            let fechaMasRecienteVencida = null;
+            
+            for (const det of fechasDetalles) {
+                const [year, month, day] = det.fecha_limite.split('-').map(Number);
+                let horas = 23, minutos = 59;
+                
+                if (det.hora_limite) {
+                    const parts = det.hora_limite.split(':');
+                    horas = parseInt(parts[0]);
+                    minutos = parseInt(parts[1]);
+                }
+                
+                const fechaDetalle = new Date(year, month - 1, day, horas, minutos);
+                const ahoraDate = new Date(fechaActual + 'T' + horaActual);
+                
+                if (fechaDetalle.getTime() >= ahoraDate.getTime()) {
+                    // ✅ Esta fecha NO ha vencido (es futura o es hoy pero aún no pasa la hora)
+                    fechaMasCercanaFutura = det.fecha_limite;
+                    break;
+                } else {
+                    // ✅ Esta fecha ya venció, guardar la más reciente
+                    fechaMasRecienteVencida = det.fecha_limite;
+                }
+            }
+            
+            // ✅ Si hay fecha futura, usarla; si no, usar la más reciente vencida
+            proximaEntrega = fechaMasCercanaFutura || fechaMasRecienteVencida || null;
+            
             const facturado = parseFloat(d.total_facturado) || 0;
             const pagado = parseFloat(d.total_pagado) || 0;
             const deuda = facturado - pagado;
@@ -158,7 +209,8 @@ const getReporteDoctores = async (req, res) => {
                 total_facturado: facturado,
                 total_pagado: pagado,
                 deuda_total: deuda,
-                ordenes_vencidas: vencidasResult[0]?.vencidas || 0
+                ordenes_vencidas: vencidasResult[0]?.vencidas || 0,
+                proxima_entrega: proximaEntrega
             };
         }));
         
@@ -206,6 +258,8 @@ const getReporteServicios = async (req, res) => {
 // REPORTE DE MOROSIDAD (usando detalles_orden)
 // ============================================
 // reporteController.js - REEMPLAZAR getReporteMorosidad
+
+// reporteController.js - MODIFICAR getReporteMorosidad
 
 const getReporteMorosidad = async (req, res) => {
     try {
@@ -345,36 +399,58 @@ const getReporteMorosidad = async (req, res) => {
             doctorData.total_pagado = parseFloat(pagosResult[0]?.total_pagado) || 0;
         }
         
-        // ✅ Calcular días de mora (promedio de las órdenes vencidas)
-        for (const [doctorKey, doctorData] of doctoresMap) {
-            let totalDias = 0;
-            let countVencidas = 0;
+// reporteController.js - MODIFICAR getReporteMorosidad (solo la parte de días de mora)
+
+// ✅ Calcular días de mora (usando FLOOR con comparación EXACTA de horas)
+for (const [doctorKey, doctorData] of doctoresMap) {
+    let totalDias = 0;
+    let countVencidas = 0;
+    
+    for (const orden of doctorData.ordenes) {
+        if (orden.tieneVencido) {
+            // ✅ Buscar el detalle más antiguo vencido
+            let fechaMasAntigua = null;
+            let horaMasAntigua = null;
             
-            for (const orden of doctorData.ordenes) {
-                if (orden.tieneVencido) {
-                    // ✅ Buscar el detalle más antiguo vencido
-                    let fechaMasAntigua = null;
-                    for (const det of orden.detalles) {
-                        if (det.vencido && det.fecha_limite) {
-                            if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
-                                fechaMasAntigua = det.fecha_limite;
-                            }
-                        }
-                    }
-                    
-                    if (fechaMasAntigua) {
-                        const fechaLimite = new Date(fechaMasAntigua);
-                        const ahoraDate = new Date(fechaActual);
-                        const diffTime = ahoraDate.getTime() - fechaLimite.getTime();
-                        const diffDias = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                        totalDias += Math.max(0, diffDias);
-                        countVencidas++;
+            for (const det of orden.detalles) {
+                if (det.vencido && det.fecha_limite) {
+                    if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
+                        fechaMasAntigua = det.fecha_limite;
+                        horaMasAntigua = det.hora_limite || '23:59:59';
                     }
                 }
             }
             
-            doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
+            if (fechaMasAntigua) {
+                // ✅ Crear fecha límite COMPLETA con hora
+                const [year, month, day] = fechaMasAntigua.split('-').map(Number);
+                let horas = 23, minutos = 59, segundos = 59;
+                
+                if (horaMasAntigua) {
+                    const parts = horaMasAntigua.split(':');
+                    horas = parseInt(parts[0]);
+                    minutos = parseInt(parts[1]);
+                    segundos = parseInt(parts[2]) || 0;
+                }
+                
+                const fechaLimiteCompleta = new Date(year, month - 1, day, horas, minutos, segundos);
+                const ahoraCompleta = new Date(fechaActual + 'T' + horaActual);
+                
+                // ✅ Calcular diferencia en milisegundos y luego en días
+                const diffMs = ahoraCompleta.getTime() - fechaLimiteCompleta.getTime();
+                
+                // ✅ Si la diferencia es positiva, calcular días completos (FLOOR)
+                if (diffMs > 0) {
+                    const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                    totalDias += diffDias;
+                    countVencidas++;
+                }
+            }
         }
+    }
+    
+    doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
+}
         
         // ✅ Convertir a array y calcular deuda
         const deudasConDeuda = Array.from(doctoresMap.values())
@@ -400,7 +476,7 @@ const getReporteMorosidad = async (req, res) => {
             ordenesVencidas: deudasConDeuda.reduce((sum, d) => sum + d.vencidas, 0)
         };
         
-        console.log('📊 [DEBUG] Resumen morosidad (órdenes):', JSON.stringify(resumen, null, 2));
+        console.log('📊 [DEBUG] Resumen morosidad:', JSON.stringify(resumen, null, 2));
         console.log('📊 [DEBUG] Detalle:', JSON.stringify(deudasConDeuda, null, 2));
         
         res.json({
@@ -817,75 +893,8 @@ async function getReporteServiciosData() {
 }
 
 
-// reporteController.js - CORREGIR getReporteMorosidadData (versión definitiva)
 
-async function getReporteMorosidadData() {
-    // Primero obtener datos detallados por orden
-    const deudasPorOrden = await sequelize.query(`
-        SELECT 
-            d.nombre as doctor,
-            d.telefono_whatsapp as telefono,
-            o.id as orden_id,
-            COALESCE(SUM(do.precio_unitario * do.cantidad), 0) as total_facturado,
-            COALESCE((
-                SELECT SUM(p.monto) 
-                FROM pagos p 
-                WHERE p.orden_id = o.id
-            ), 0) as total_pagado
-        FROM doctores d
-        JOIN ordenes o ON d.id = o.doctor_id
-        JOIN detalles_orden do ON o.id = do.orden_id
-        WHERE o.estado = 'pendiente' AND d.activo = TRUE
-        GROUP BY d.nombre, d.telefono_whatsapp, o.id
-    `, { type: sequelize.QueryTypes.SELECT });
-
-    console.log('📊 [DEBUG] Datos morosidad por orden:', JSON.stringify(deudasPorOrden, null, 2));
-
-    // Agrupar por doctor
-    const doctoresMap = new Map();
-
-    for (const row of deudasPorOrden) {
-        const key = row.doctor;
-        if (!doctoresMap.has(key)) {
-            doctoresMap.set(key, {
-                doctor: row.doctor,
-                telefono: row.telefono,
-                ordenes: 0,
-                vencidas: 0,
-                total_facturado: 0,
-                total_pagado: 0,
-                diasMora: 0
-            });
-        }
-
-        const doctorData = doctoresMap.get(key);
-        doctorData.ordenes += 1;
-        doctorData.total_facturado += Number(row.total_facturado) || 0;
-        doctorData.total_pagado += Number(row.total_pagado) || 0;
-    }
-
-    // Calcular deuda y filtrar
-    const resultado = Array.from(doctoresMap.values())
-        .map(d => {
-            const deuda = d.total_facturado - d.total_pagado;
-            return {
-                doctor: d.doctor,
-                telefono: d.telefono || '',
-                ordenes: d.ordenes,
-                vencidas: 0,  // Se puede calcular si es necesario
-                deuda: deuda,
-                diasMora: 0
-            };
-        })
-        .filter(d => d.deuda > 0);
-
-    console.log('📊 [DEBUG] Resultado morosidad para Excel:', JSON.stringify(resultado, null, 2));
-
-    return resultado;
-}
-
-// reporteController.js - REEMPLAZAR getReporteMorosidadData
-
+// reporteController.js - CORRECTA (con Math.floor)
 async function getReporteMorosidadData() {
     try {
         // ✅ Obtener fecha/hora actual del servidor
@@ -1004,36 +1013,57 @@ async function getReporteMorosidadData() {
             }
         }
         
-        // ✅ Calcular días de mora
-        for (const [doctorKey, doctorData] of doctoresMap) {
-            let totalDias = 0;
-            let countVencidas = 0;
+      // reporteController.js - MODIFICAR getReporteMorosidadData (misma corrección)
+
+// ✅ Calcular días de mora (usando FLOOR con comparación EXACTA de horas)
+for (const [doctorKey, doctorData] of doctoresMap) {
+    let totalDias = 0;
+    let countVencidas = 0;
+    
+    for (const [ordenId, orden] of ordenesMap) {
+        if (orden.doctor_id === doctorKey && orden.tieneVencido) {
+            // Buscar el detalle más antiguo vencido
+            let fechaMasAntigua = null;
+            let horaMasAntigua = null;
             
-            for (const [ordenId, orden] of ordenesMap) {
-                if (orden.doctor_id === doctorKey && orden.tieneVencido) {
-                    // Buscar el detalle más antiguo vencido
-                    let fechaMasAntigua = null;
-                    for (const det of orden.detalles) {
-                        if (det.vencido && det.fecha_limite) {
-                            if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
-                                fechaMasAntigua = det.fecha_limite;
-                            }
-                        }
-                    }
-                    
-                    if (fechaMasAntigua) {
-                        const fechaLimite = new Date(fechaMasAntigua);
-                        const ahoraDate = new Date(fechaActual);
-                        const diffTime = ahoraDate.getTime() - fechaLimite.getTime();
-                        const diffDias = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                        totalDias += Math.max(0, diffDias);
-                        countVencidas++;
+            for (const det of orden.detalles) {
+                if (det.vencido && det.fecha_limite) {
+                    if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
+                        fechaMasAntigua = det.fecha_limite;
+                        horaMasAntigua = det.hora_limite || '23:59:59';
                     }
                 }
             }
             
-            doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
+            if (fechaMasAntigua) {
+                // ✅ Crear fecha límite COMPLETA con hora
+                const [year, month, day] = fechaMasAntigua.split('-').map(Number);
+                let horas = 23, minutos = 59, segundos = 59;
+                
+                if (horaMasAntigua) {
+                    const parts = horaMasAntigua.split(':');
+                    horas = parseInt(parts[0]);
+                    minutos = parseInt(parts[1]);
+                    segundos = parseInt(parts[2]) || 0;
+                }
+                
+                const fechaLimiteCompleta = new Date(year, month - 1, day, horas, minutos, segundos);
+                const ahoraCompleta = new Date(fechaActual + 'T' + horaActual);
+                
+                // ✅ Calcular diferencia en milisegundos y luego en días
+                const diffMs = ahoraCompleta.getTime() - fechaLimiteCompleta.getTime();
+                
+                if (diffMs > 0) {
+                    const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                    totalDias += diffDias;
+                    countVencidas++;
+                }
+            }
         }
+    }
+    
+    doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
+}
         
         // ✅ Convertir a array y calcular deuda
         const resultado = Array.from(doctoresMap.values())
