@@ -97,16 +97,40 @@ const getReporteIngresos = async (req, res) => {
 // ============================================
 // reporteController.js - MODIFICAR getReporteDoctores
 
+// reporteController.js - MODIFICAR getReporteDoctores (versión corregida)
+
+// reporteController.js - MODIFICAR getReporteDoctores
+
+// reporteController.js - MODIFICAR getReporteDoctores (versión definitiva)
+
+// reporteController.js - MODIFICAR getReporteDoctores (versión FINAL)
+
 const getReporteDoctores = async (req, res) => {
     try {
-        // ✅ Obtener fecha/hora actual del servidor
+        const { tipo_cliente, mes } = req.query;
+        
         const ahora = new Date();
         const fechaActual = ahora.toISOString().split('T')[0];
         const horaActual = ahora.toTimeString().slice(0, 8);
         
-        console.log('🔍 [DEBUG] Fecha actual:', fechaActual, 'Hora:', horaActual);
+        console.log('🔍 [DEBUG] Filtros:', { tipo_cliente, mes });
         
-        // ✅ Obtener datos por doctor con órdenes y detalles
+        let fechaFiltro = '';
+        if (mes) {
+            const [year, month] = mes.split('-');
+            const startDate = `${year}-${month}-01`;
+            const endDate = `${year}-${month}-${new Date(year, month, 0).getDate()}`;
+            fechaFiltro = `AND o.fecha_registro BETWEEN '${startDate}' AND '${endDate}'`;
+        }
+        
+        let tipoClienteFiltro = '';
+        if (tipo_cliente === 'unico') {
+            tipoClienteFiltro = `AND o.cliente_nombre IS NOT NULL AND o.cliente_nombre != ''`;
+        } else if (tipo_cliente === 'multiple') {
+            tipoClienteFiltro = `AND (o.cliente_nombre IS NULL OR o.cliente_nombre = '')`;
+        }
+        
+        // ✅ CONSULTA CORREGIDA - Agrupar SOLO por doctor, NO por orden
         const doctores = await sequelize.query(`
             SELECT 
                 d.id as doctorId,
@@ -121,14 +145,23 @@ const getReporteDoctores = async (req, res) => {
                 COALESCE((
                     SELECT SUM(p.monto) 
                     FROM pagos p 
-                    WHERE p.orden_id = o.id
+                    WHERE p.orden_id IN (
+                        SELECT o2.id 
+                        FROM ordenes o2 
+                        WHERE o2.doctor_id = d.id
+                        ${fechaFiltro}
+                    )
                 ), 0) as total_pagado
             FROM doctores d
             LEFT JOIN ordenes o ON d.id = o.doctor_id
             LEFT JOIN detalles_orden do ON o.id = do.orden_id
             WHERE d.activo = TRUE
+            ${fechaFiltro}
+            ${tipoClienteFiltro}
             GROUP BY d.id, d.nombre, d.telefono_whatsapp, d.logo_url, d.direccion
         `, { type: sequelize.QueryTypes.SELECT });
+        
+        console.log('📊 [DEBUG] Doctores agrupados:', JSON.stringify(doctores, null, 2));
         
         // ✅ Procesar cada doctor para calcular vencidas y próxima entrega
         const doctoresProcesados = await Promise.all(doctores.map(async (d) => {
@@ -148,17 +181,13 @@ const getReporteDoctores = async (req, res) => {
                 type: sequelize.QueryTypes.SELECT 
             });
             
-            // ✅ Calcular PRÓXIMA ENTREGA (fecha más cercana que NO ha vencido)
-            // Si todas están vencidas, mostrar la que venció más tarde
+            // ✅ Calcular PRÓXIMA ENTREGA
             let proximaEntrega = null;
             
             const fechasDetalles = await sequelize.query(`
                 SELECT 
                     do.fecha_limite,
-                    do.hora_limite,
-                    do.precio_unitario,
-                    do.cantidad,
-                    o.estado
+                    do.hora_limite
                 FROM detalles_orden do
                 JOIN ordenes o ON do.orden_id = o.id
                 WHERE o.doctor_id = :doctorId
@@ -170,7 +199,6 @@ const getReporteDoctores = async (req, res) => {
                 type: sequelize.QueryTypes.SELECT 
             });
             
-            // ✅ Buscar la primera fecha NO vencida
             let fechaMasCercanaFutura = null;
             let fechaMasRecienteVencida = null;
             
@@ -188,16 +216,13 @@ const getReporteDoctores = async (req, res) => {
                 const ahoraDate = new Date(fechaActual + 'T' + horaActual);
                 
                 if (fechaDetalle.getTime() >= ahoraDate.getTime()) {
-                    // ✅ Esta fecha NO ha vencido (es futura o es hoy pero aún no pasa la hora)
                     fechaMasCercanaFutura = det.fecha_limite;
                     break;
                 } else {
-                    // ✅ Esta fecha ya venció, guardar la más reciente
                     fechaMasRecienteVencida = det.fecha_limite;
                 }
             }
             
-            // ✅ Si hay fecha futura, usarla; si no, usar la más reciente vencida
             proximaEntrega = fechaMasCercanaFutura || fechaMasRecienteVencida || null;
             
             const facturado = parseFloat(d.total_facturado) || 0;
@@ -215,11 +240,17 @@ const getReporteDoctores = async (req, res) => {
         }));
         
         const deudaTotal = doctoresProcesados.reduce((sum, d) => sum + d.deuda_total, 0);
+        const totalFacturado = doctoresProcesados.reduce((sum, d) => sum + d.total_facturado, 0);
+        const totalPagado = doctoresProcesados.reduce((sum, d) => sum + d.total_pagado, 0);
+        
+        console.log('📊 [DEBUG] Totales finales:', { totalFacturado, totalPagado, deudaTotal });
         
         res.json({
             doctores: doctoresProcesados,
             totalDoctores: doctoresProcesados.length,
-            deudaTotal: deudaTotal
+            deudaTotal: deudaTotal,
+            totalFacturado: totalFacturado,
+            totalPagado: totalPagado
         });
 
     } catch (error) {
@@ -1114,15 +1145,18 @@ async function getTodosReportesData() {
 // ============================================
 
 // Agregar este endpoint en reporteController.js
-// reporteController.js - CORREGIR exportarReportePorDoctor
-// reporteController.js - CORREGIR exportarReportePorDoctor (versión definitiva)
+// reporteController.js - MODIFICAR exportarReportePorDoctor (agregar hoja de pagos)
+
+// reporteController.js - MODIFICAR exportarReportePorDoctor
+
+// reporteController.js - REEMPLAZAR exportarReportePorDoctor (sin duplicados)
 
 const exportarReportePorDoctor = async (req, res) => {
     try {
         const { doctorId } = req.params;
         const workbook = new ExcelJS.Workbook();
         
-        // ✅ Obtener datos del doctor - Usando la misma lógica que getReporteDoctores
+        // ✅ Obtener datos del doctor CON total_pagado correcto
         const doctorData = await sequelize.query(`
             SELECT 
                 d.nombre as doctor,
@@ -1141,10 +1175,26 @@ const exportarReportePorDoctor = async (req, res) => {
             LEFT JOIN ordenes o ON d.id = o.doctor_id
             LEFT JOIN detalles_orden do ON o.id = do.orden_id
             WHERE d.id = :doctorId AND d.activo = TRUE
-            GROUP BY d.nombre, d.telefono_whatsapp, d.direccion
+            GROUP BY d.nombre, d.telefono_whatsapp, d.direccion, o.id
         `, { replacements: { doctorId }, type: sequelize.QueryTypes.SELECT });
         
+        // ✅ Calcular totales manualmente (sumar todas las órdenes)
+        let totalFacturado = 0;
+        let totalPagado = 0;
+        let totalOrdenes = 0;
+        let totalPendientes = 0;
+        let totalTerminadas = 0;
+        
+        doctorData.forEach(row => {
+            totalFacturado += parseFloat(row.total_facturado) || 0;
+            totalPagado += parseFloat(row.total_pagado) || 0;
+            totalOrdenes += parseInt(row.total_ordenes) || 0;
+            totalPendientes += parseInt(row.ordenes_pendientes) || 0;
+            totalTerminadas += parseInt(row.ordenes_terminadas) || 0;
+        });
+        
         const doctor = doctorData[0] || {};
+        const deudaTotal = totalFacturado - totalPagado;
         
         // ✅ Obtener órdenes detalladas del doctor
         const ordenes = await sequelize.query(`
@@ -1176,47 +1226,89 @@ const exportarReportePorDoctor = async (req, res) => {
             ORDER BY o.fecha_registro DESC, do.orden ASC
         `, { replacements: { doctorId }, type: sequelize.QueryTypes.SELECT });
         
-        // Procesar órdenes
-        const ordenesProcesadas = ordenes.map(o => {
-            const subtotal = parseFloat(o.subtotal) || 0;
-            const totalOrden = parseFloat(o.total_orden) || 0;
-            const pagadoPorOrden = parseFloat(o.pagado_por_orden) || 0;
+        // ✅ Obtener pagos detallados del doctor - CORREGIDO: Agrupar por pago para evitar duplicados
+        const pagos = await sequelize.query(`
+            SELECT DISTINCT
+                o.id_externo as orden,
+                p.id as pago_id,
+                p.monto,
+                p.metodo_pago,
+                p.referencia,
+                p.creado_en as fecha_pago
+            FROM pagos p
+            JOIN ordenes o ON p.orden_id = o.id
+            WHERE o.doctor_id = :doctorId
+            ORDER BY p.creado_en DESC
+        `, { replacements: { doctorId }, type: sequelize.QueryTypes.SELECT });
+        
+        // ✅ Para cada pago, obtener el servicio asociado (si existe en observaciones)
+        const pagosConServicio = await Promise.all(pagos.map(async (pago) => {
+            let servicio = '-';
+            let cliente = '-';
             
-            let pagadoPorServicio = 0;
-            if (totalOrden > 0 && pagadoPorOrden > 0) {
-                pagadoPorServicio = (subtotal / totalOrden) * pagadoPorOrden;
+            // ✅ Intentar obtener servicio y cliente desde observaciones
+            if (pago.referencia) {
+                const detalleInfo = await sequelize.query(`
+                    SELECT 
+                        s.nombre as servicio,
+                        COALESCE(do.cliente_nombre, o.cliente_nombre, '-') as cliente
+                    FROM pagos p
+                    JOIN ordenes o ON p.orden_id = o.id
+                    LEFT JOIN detalles_orden do ON do.id = JSON_EXTRACT(p.observaciones, '$.detalle_id')
+                    LEFT JOIN servicios s ON do.servicio_id = s.id
+                    WHERE p.id = :pagoId
+                `, { 
+                    replacements: { pagoId: pago.pago_id },
+                    type: sequelize.QueryTypes.SELECT 
+                });
+                
+                if (detalleInfo && detalleInfo.length > 0) {
+                    servicio = detalleInfo[0].servicio || '-';
+                    cliente = detalleInfo[0].cliente || '-';
+                }
             }
             
-            const saldo = subtotal - pagadoPorServicio;
+            // ✅ Si no se encontró servicio, buscar por orden
+            if (servicio === '-') {
+                const ordenInfo = await sequelize.query(`
+                    SELECT 
+                        s.nombre as servicio,
+                        COALESCE(do.cliente_nombre, o.cliente_nombre, '-') as cliente
+                    FROM ordenes o
+                    JOIN detalles_orden do ON o.id = do.orden_id
+                    JOIN servicios s ON do.servicio_id = s.id
+                    WHERE o.id = (SELECT orden_id FROM pagos WHERE id = :pagoId)
+                    LIMIT 1
+                `, { 
+                    replacements: { pagoId: pago.pago_id },
+                    type: sequelize.QueryTypes.SELECT 
+                });
+                
+                if (ordenInfo && ordenInfo.length > 0) {
+                    servicio = ordenInfo[0].servicio || '-';
+                    cliente = ordenInfo[0].cliente || '-';
+                }
+            }
             
             return {
-                orden: o.orden,
-                servicio: o.servicio,
-                precio_unitario: subtotal / (o.cantidad || 1),
-                cantidad: o.cantidad || 1,
-                subtotal: subtotal,
-                fecha_limite: o.fecha_limite,
-                hora_limite: o.hora_limite,
-                estado: o.estado,
-                cliente: o.cliente,
-                detalle_servicio: o.detalle_servicio || '-',
-                pagado: pagadoPorServicio,
-                saldo: saldo
+                orden: pago.orden || '-',
+                servicio: servicio,
+                cliente: cliente,
+                monto: parseFloat(pago.monto).toFixed(2) || '0.00',
+                metodo_pago: pago.metodo_pago || '-',
+                referencia: pago.referencia || '-',
+                fecha_pago: pago.fecha_pago ? new Date(pago.fecha_pago).toLocaleString('es-PE') : '-'
             };
-        });
+        }));
         
-        const nombreDoctor = (doctor.doctor || `doctor_${doctorId}`).replace(/\s/g, '_');
-        const filename = `reporte_doctor_${nombreDoctor}_${new Date().toISOString().split('T')[0]}.xlsx`;
-        
-        // Hoja de resumen
+        // ============================================
+        // HOJA 1: RESUMEN
+        // ============================================
         const wsResumen = workbook.addWorksheet('Resumen');
         const headerStyle = { 
             font: { bold: true, color: { argb: 'FFFFFFFF' } }, 
             fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } } 
         };
-        
-        const totalFacturado = Number(doctor.total_facturado) || 0;
-        const totalPagado = Number(doctor.total_pagado) || 0;
         
         wsResumen.addRow(['Doctor:', doctor.doctor || 'N/A']);
         wsResumen.addRow(['Teléfono:', doctor.telefono || 'N/A']);
@@ -1230,16 +1322,19 @@ const exportarReportePorDoctor = async (req, res) => {
             cell.fill = headerStyle.fill; 
         });
         wsResumen.addRow([
-            doctor.total_ordenes || 0,
-            doctor.ordenes_pendientes || 0,
-            doctor.ordenes_terminadas || 0,
+            totalOrdenes,
+            totalPendientes,
+            totalTerminadas,
             totalFacturado.toFixed(2),
             totalPagado.toFixed(2),
-            (totalFacturado - totalPagado).toFixed(2)
+            deudaTotal.toFixed(2)
         ]);
+        wsResumen.columns.forEach(col => col.width = 20);
         
-        // Hoja de detalle
-        if (ordenesProcesadas.length > 0) {
+        // ============================================
+        // HOJA 2: DETALLE DE ÓRDENES
+        // ============================================
+        if (ordenes.length > 0) {
             const wsDetalle = workbook.addWorksheet('Detalle de Órdenes');
             const detalleHeaders = ['Orden', 'Servicio', 'Precio', 'Cantidad', 'Subtotal', 'Fecha Límite', 'Hora', 'Estado', 'Cliente', 'Detalle Cliente', 'Pagado', 'Saldo'];
             wsDetalle.addRow(detalleHeaders);
@@ -1247,17 +1342,65 @@ const exportarReportePorDoctor = async (req, res) => {
                 cell.font = headerStyle.font; 
                 cell.fill = headerStyle.fill; 
             });
-            ordenesProcesadas.forEach(o => {
+            
+            ordenes.forEach(o => {
+                const subtotal = parseFloat(o.subtotal) || 0;
+                const totalOrden = parseFloat(o.total_orden) || 0;
+                const pagadoPorOrden = parseFloat(o.pagado_por_orden) || 0;
+                
+                let pagadoPorServicio = 0;
+                if (totalOrden > 0 && pagadoPorOrden > 0) {
+                    pagadoPorServicio = (subtotal / totalOrden) * pagadoPorOrden;
+                }
+                
+                const saldo = subtotal - pagadoPorServicio;
+                
                 wsDetalle.addRow([
-                    o.orden, o.servicio, o.precio_unitario.toFixed(2), o.cantidad, 
-                    o.subtotal.toFixed(2), o.fecha_limite, o.hora_limite, o.estado, 
-                    o.cliente, o.detalle_servicio, o.pagado.toFixed(2), o.saldo.toFixed(2)
+                    o.orden || '-',
+                    o.servicio || '-',
+                    parseFloat(o.precio_unitario).toFixed(2) || '0.00',
+                    o.cantidad || 1,
+                    subtotal.toFixed(2),
+                    o.fecha_limite || '-',
+                    o.hora_limite || '-',
+                    o.estado || '-',
+                    o.cliente || '-',
+                    o.detalle_servicio || '-',
+                    pagadoPorServicio.toFixed(2),
+                    saldo.toFixed(2)
                 ]);
             });
             wsDetalle.columns.forEach(col => col.width = 18);
         }
         
-        wsResumen.columns.forEach(col => col.width = 20);
+        // ============================================
+        // HOJA 3: DETALLE DE PAGOS
+        // ============================================
+        if (pagosConServicio.length > 0) {
+            const wsPagos = workbook.addWorksheet('Detalle de Pagos');
+            const pagosHeaders = ['Orden', 'Servicio', 'Cliente', 'Monto', 'Método', 'Referencia', 'Fecha Pago'];
+            wsPagos.addRow(pagosHeaders);
+            wsPagos.getRow(1).eachCell((cell) => { 
+                cell.font = headerStyle.font; 
+                cell.fill = headerStyle.fill; 
+            });
+            
+            pagosConServicio.forEach(p => {
+                wsPagos.addRow([
+                    p.orden,
+                    p.servicio,
+                    p.cliente,
+                    p.monto,
+                    p.metodo_pago,
+                    p.referencia,
+                    p.fecha_pago
+                ]);
+            });
+            wsPagos.columns.forEach(col => col.width = 18);
+        }
+        
+        const nombreDoctor = (doctor.doctor || `doctor_${doctorId}`).replace(/\s/g, '_');
+        const filename = `reporte_doctor_${nombreDoctor}_${new Date().toISOString().split('T')[0]}.xlsx`;
         
         const buffer = await workbook.xlsx.writeBuffer();
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1269,7 +1412,6 @@ const exportarReportePorDoctor = async (req, res) => {
         res.status(500).json({ error: 'Error al exportar reporte' });
     }
 };
-
 
 
 
