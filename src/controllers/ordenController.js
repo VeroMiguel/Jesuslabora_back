@@ -652,7 +652,47 @@ const eliminarImagenDetalle = async (req, res) => {
 // ============================================
 // EXPORTACIÓN
 // ============================================
+// ============================================
+// ACTUALIZAR DETALLE DE ORDEN (cliente)
+// ============================================
 
+const actualizarDetalleOrden = async (req, res) => {
+    try {
+        const { detalleId } = req.params;
+        const { cliente_nombre, detalle_cliente } = req.body;
+        
+        if (!req.usuario || !req.usuario.id) {
+            return res.status(401).json({ error: 'Usuario no autenticado' });
+        }
+        
+        const detalle = await DetalleOrden.findByPk(detalleId);
+        
+        if (!detalle) {
+            return res.status(404).json({ error: 'Detalle no encontrado' });
+        }
+        
+        // Actualizar solo los campos permitidos
+        if (cliente_nombre !== undefined) {
+            detalle.cliente_nombre = cliente_nombre;
+        }
+        if (detalle_cliente !== undefined) {
+            detalle.detalle_cliente = detalle_cliente;
+        }
+        
+        await detalle.save();
+        
+        logger.info(`Detalle de orden actualizado - ID: ${detalleId}, Cliente: ${cliente_nombre}`);
+        
+        res.json({
+            mensaje: 'Detalle actualizado correctamente',
+            detalle: detalle
+        });
+        
+    } catch (error) {
+        logger.error('Error actualizando detalle de orden:', error);
+        res.status(500).json({ error: 'Error al actualizar el detalle', details: error.message });
+    }
+};
 module.exports = {
     obtenerOrdenes,
     obtenerOrdenPorId,
@@ -666,5 +706,6 @@ module.exports = {
     actualizarImagenReferencia,
     obtenerOrdenesConFiltrosAvanzados,
     actualizarImagenDetalle,
-    eliminarImagenDetalle
+    eliminarImagenDetalle,
+    actualizarDetalleOrden
 };

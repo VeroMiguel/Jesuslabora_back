@@ -1,25 +1,22 @@
 const { Pago, Orden } = require('../models');
-const { sequelize, Op  } = require('../models');
+const { sequelize, Op } = require('../models');
 const logger = require('../utils/logger');
 
 const registrarPago = async (req, res) => {
     const transaction = await sequelize.transaction();
     
     try {
-        // ✅ LOG 1: Ver qué está llegando
         console.log('📝 [DEBUG] Body recibido:', JSON.stringify(req.body, null, 2));
         console.log('📝 [DEBUG] Usuario autenticado:', req.usuario?.id);
         
         const { orden_id, monto, metodo_pago, referencia, observaciones } = req.body;
 
-        // ✅ Validar que el usuario está autenticado
         if (!req.usuario || !req.usuario.id) {
             console.log('❌ Usuario no autenticado');
             await transaction.rollback();
             return res.status(401).json({ error: 'Usuario no autenticado' });
         }
 
-        // ✅ Validar datos requeridos
         if (!orden_id || !monto || !metodo_pago) {
             console.log('❌ Datos faltantes:', { orden_id, monto, metodo_pago });
             await transaction.rollback();
@@ -28,7 +25,6 @@ const registrarPago = async (req, res) => {
 
         console.log(`📝 Buscando orden ID: ${orden_id}`);
 
-        // Obtener la orden
         const orden = await Orden.findByPk(orden_id, { transaction });
         
         if (!orden) {
@@ -39,7 +35,6 @@ const registrarPago = async (req, res) => {
 
         console.log(`✅ Orden encontrada: ${orden.id_externo}, Total: ${orden.total}`);
 
-        // ✅ Validar que el monto no exceda el saldo pendiente
         const pagosExistentes = await Pago.findAll({
             where: { orden_id },
             attributes: [[sequelize.fn('SUM', sequelize.col('monto')), 'totalPagado']],
@@ -62,7 +57,6 @@ const registrarPago = async (req, res) => {
             });
         }
 
-        // Crear el pago
         console.log(`📝 Creando pago para orden ${orden_id} con monto ${montoNumerico}`);
         
         const pago = await Pago.create({
@@ -76,17 +70,14 @@ const registrarPago = async (req, res) => {
 
         console.log(`✅ Pago creado con ID: ${pago.id}`);
 
-        // ✅ Determinar nuevo estado de la orden
         let nuevoEstado = 'pendiente';
         if (nuevoTotalPagado >= totalOrden) {
             nuevoEstado = 'terminado';
         }
 
-        // Actualizar orden
         await orden.update({ estado: nuevoEstado }, { transaction });
         console.log(`📝 Orden actualizada a estado: ${nuevoEstado}`);
 
-        // ✅ Registrar en log
         try {
             await sequelize.query(
                 `INSERT INTO logs_actividad (usuario_id, accion, entidad_tipo, entidad_id, detalle, ip_direccion, creado_en) 
@@ -152,12 +143,10 @@ const obtenerPagosPorOrden = async (req, res) => {
     }
 };
 
-// En pagoController.js, modifica eliminarPago
 const eliminarPago = async (req, res) => {
     try {
         const { id } = req.params;
         
-        // ✅ Validar que el usuario está autenticado
         if (!req.usuario || !req.usuario.id) {
             return res.status(401).json({ error: 'Usuario no autenticado' });
         }
@@ -170,10 +159,8 @@ const eliminarPago = async (req, res) => {
 
         const ordenId = pago.orden_id;
         
-        // Eliminar el pago
         await pago.destroy();
 
-        // Recalcular el total pagado de la orden
         const [result] = await sequelize.query(
             'SELECT COALESCE(SUM(monto), 0) as total FROM pagos WHERE orden_id = ?',
             { replacements: [ordenId] }
@@ -181,24 +168,20 @@ const eliminarPago = async (req, res) => {
         
         const totalPagado = parseFloat(result[0]?.total || 0);
         
-        // Obtener la orden
         const orden = await Orden.findByPk(ordenId);
         
         if (orden) {
-            // Determinar nuevo estado
             let nuevoEstado = 'pendiente';
             if (totalPagado >= parseFloat(orden.total)) {
                 nuevoEstado = 'terminado';
             }
             
-            // Actualizar si cambió
             if (orden.estado !== nuevoEstado) {
                 await orden.update({ estado: nuevoEstado });
                 logger.info(`Orden ${ordenId} actualizada a estado: ${nuevoEstado} después de eliminar pago`);
             }
         }
 
-        // Registrar en log
         await sequelize.query(
             `INSERT INTO logs_actividad (usuario_id, accion, entidad_tipo, entidad_id, detalle, ip_direccion, creado_en) 
              VALUES (?, ?, ?, ?, ?, ?, NOW())`,
@@ -225,6 +208,8 @@ const eliminarPago = async (req, res) => {
         res.status(500).json({ error: 'Error al eliminar pago', details: error.message });
     }
 };
+
+// ✅ MÉTODO CORREGIDO - actualizarPago
 const actualizarPago = async (req, res) => {
     try {
         const { id } = req.params;
@@ -241,10 +226,10 @@ const actualizarPago = async (req, res) => {
             return res.status(404).json({ error: 'Pago no encontrado' });
         }
 
-        // Verificar que la orden sigue activa
+        // ✅ CORREGIDO: Verificar que la orden existe
         const orden = await Orden.findByPk(pago.orden_id);
-        if (!orden || !orden.activo) {
-            return res.status(400).json({ error: 'La orden asociada no está activa' });
+        if (!orden) {
+            return res.status(400).json({ error: 'La orden asociada no existe' });
         }
 
         // Calcular el total de otros pagos (excluyendo el actual)
@@ -317,7 +302,6 @@ const actualizarPago = async (req, res) => {
         res.status(500).json({ error: 'Error al actualizar pago' });
     }
 };
-
 
 module.exports = {
     registrarPago,

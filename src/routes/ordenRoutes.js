@@ -18,7 +18,8 @@ const {
     obtenerFechaHoraServidor,
     obtenerOrdenesConFiltrosAvanzados,
     actualizarImagenDetalle,
-    eliminarImagenDetalle
+    eliminarImagenDetalle,
+    actualizarDetalleOrden
 } = require('../controllers/ordenController');
 const { autenticar, autorizar } = require('../middleware/auth');
 const { validarOrden } = require('../middleware/validator');
@@ -90,5 +91,10 @@ router.delete('/:id', autenticar, autorizar('admin'), eliminarOrden);
 
 // Subir imagen de referencia para orden completa (mantener por compatibilidad)
 router.post('/:id/imagen-referencia', autenticar, upload.single('imagen'), actualizarImagenReferencia);
+// ordenRoutes.js - AGREGAR ESTA RUTA
 
+// ============================================
+// RUTAS PARA DETALLES (actualizar cliente)
+// ============================================
+router.put('/detalles/:detalleId', autenticar, actualizarDetalleOrden);
 module.exports = router;
