@@ -1,11 +1,12 @@
-// reporteController.js - VERSIÓN ACTUALIZADA PARA detalles_orden
+// reporteController.js - VERSIÓN CORREGIDA (sin JSON_ARRAYAGG)
+
 const { sequelize, Doctor, Servicio, Orden, Pago, DetalleOrden } = require('../models');
 const logger = require('../utils/logger');
 const { Op } = require('sequelize');
 const ExcelJS = require('exceljs');
 
 // ============================================
-// REPORTE DE INGRESOS (basado en pagos - no cambia)
+// REPORTE DE INGRESOS
 // ============================================
 const getReporteIngresos = async (req, res) => {
     try {
@@ -93,18 +94,8 @@ const getReporteIngresos = async (req, res) => {
 };
 
 // ============================================
-// REPORTE DE DOCTORES (usando detalles_orden)
+// REPORTE DE DOCTORES - CORREGIDO (sin JSON_ARRAYAGG)
 // ============================================
-// reporteController.js - MODIFICAR getReporteDoctores
-
-// reporteController.js - MODIFICAR getReporteDoctores (versión corregida)
-
-// reporteController.js - MODIFICAR getReporteDoctores
-
-// reporteController.js - MODIFICAR getReporteDoctores (versión definitiva)
-
-// reporteController.js - MODIFICAR getReporteDoctores (versión FINAL)
-
 const getReporteDoctores = async (req, res) => {
     try {
         const { tipo_cliente, mes } = req.query;
@@ -130,7 +121,7 @@ const getReporteDoctores = async (req, res) => {
             tipoClienteFiltro = `AND (o.cliente_nombre IS NULL OR o.cliente_nombre = '')`;
         }
         
-        // ✅ CONSULTA CORREGIDA - Agrupar SOLO por doctor, NO por orden
+        // ✅ Obtener doctores con resumen
         const doctores = await sequelize.query(`
             SELECT 
                 d.id as doctorId,
@@ -161,10 +152,105 @@ const getReporteDoctores = async (req, res) => {
             GROUP BY d.id, d.nombre, d.telefono_whatsapp, d.logo_url, d.direccion
         `, { type: sequelize.QueryTypes.SELECT });
         
-        console.log('📊 [DEBUG] Doctores agrupados:', JSON.stringify(doctores, null, 2));
+        console.log('📊 [DEBUG] Doctores encontrados:', doctores.length);
         
-        // ✅ Procesar cada doctor para calcular vencidas y próxima entrega
-        const doctoresProcesados = await Promise.all(doctores.map(async (d) => {
+        // ✅ Obtener órdenes detalladas para cada doctor (usando GROUP_CONCAT en lugar de JSON_ARRAYAGG)
+        const doctoresConOrdenes = await Promise.all(doctores.map(async (d) => {
+            // ✅ Obtener órdenes del doctor con sus detalles y pagos (usando GROUP_CONCAT)
+            const ordenesRaw = await sequelize.query(`
+                SELECT 
+                    o.id,
+                    o.id_externo,
+                    o.estado,
+                    o.total,
+                    o.fecha_registro,
+                    o.cliente_nombre,
+                    o.cliente_codigo,
+                    o.detalle_cliente,
+                    (
+                        SELECT CONCAT('[', 
+                            GROUP_CONCAT(
+                                JSON_OBJECT(
+                                    'id', do2.id,
+                                    'servicio_id', do2.servicio_id,
+                                    'servicio_nombre', s2.nombre,
+                                    'precio_unitario', do2.precio_unitario,
+                                    'cantidad', do2.cantidad,
+                                    'cliente_nombre', do2.cliente_nombre,
+                                    'cliente_codigo', do2.cliente_codigo,
+                                    'detalle_cliente', do2.detalle_cliente,
+                                    'fecha_limite', do2.fecha_limite,
+                                    'hora_limite', do2.hora_limite,
+                                    'imagen_referencia_url', do2.imagen_referencia_url
+                                )
+                            ), ']'
+                        )
+                        FROM detalles_orden do2
+                        LEFT JOIN servicios s2 ON do2.servicio_id = s2.id
+                        WHERE do2.orden_id = o.id
+                        ORDER BY do2.orden ASC
+                    ) as detalles_json,
+                    (
+                        SELECT CONCAT('[', 
+                            GROUP_CONCAT(
+                                JSON_OBJECT(
+                                    'id', p2.id,
+                                    'monto', p2.monto,
+                                    'metodo_pago', p2.metodo_pago,
+                                    'referencia', p2.referencia,
+                                    'observaciones', p2.observaciones,
+                                    'creado_en', p2.creado_en
+                                )
+                            ), ']'
+                        )
+                        FROM pagos p2
+                        WHERE p2.orden_id = o.id
+                        ORDER BY p2.creado_en ASC
+                    ) as pagos_json
+                FROM ordenes o
+                WHERE o.doctor_id = :doctorId
+                ${fechaFiltro.replace('AND o.', 'AND ')}
+                ORDER BY o.fecha_registro DESC
+            `, { 
+                replacements: { doctorId: d.doctorId },
+                type: sequelize.QueryTypes.SELECT 
+            });
+            
+            // ✅ Procesar JSON (convertir strings a objetos)
+            const ordenesProcesadas = ordenesRaw.map(o => {
+                let detalles = [];
+                let pagos = [];
+                
+                try {
+                    if (o.detalles_json) {
+                        detalles = JSON.parse(o.detalles_json);
+                        // Si es null o undefined, usar array vacío
+                        if (!detalles) detalles = [];
+                    }
+                } catch (e) {
+                    console.warn('Error parseando detalles:', e.message);
+                    detalles = [];
+                }
+                
+                try {
+                    if (o.pagos_json) {
+                        pagos = JSON.parse(o.pagos_json);
+                        if (!pagos) pagos = [];
+                    }
+                } catch (e) {
+                    console.warn('Error parseando pagos:', e.message);
+                    pagos = [];
+                }
+                
+                return {
+                    ...o,
+                    detalles: detalles,
+                    pagos: pagos,
+                    detalles_json: undefined,
+                    pagos_json: undefined
+                };
+            });
+            
             // ✅ Contar órdenes vencidas del doctor
             const vencidasResult = await sequelize.query(`
                 SELECT COUNT(DISTINCT o.id) as vencidas
@@ -235,19 +321,20 @@ const getReporteDoctores = async (req, res) => {
                 total_pagado: pagado,
                 deuda_total: deuda,
                 ordenes_vencidas: vencidasResult[0]?.vencidas || 0,
-                proxima_entrega: proximaEntrega
+                proxima_entrega: proximaEntrega,
+                ordenes: ordenesProcesadas
             };
         }));
         
-        const deudaTotal = doctoresProcesados.reduce((sum, d) => sum + d.deuda_total, 0);
-        const totalFacturado = doctoresProcesados.reduce((sum, d) => sum + d.total_facturado, 0);
-        const totalPagado = doctoresProcesados.reduce((sum, d) => sum + d.total_pagado, 0);
+        const deudaTotal = doctoresConOrdenes.reduce((sum, d) => sum + d.deuda_total, 0);
+        const totalFacturado = doctoresConOrdenes.reduce((sum, d) => sum + d.total_facturado, 0);
+        const totalPagado = doctoresConOrdenes.reduce((sum, d) => sum + d.total_pagado, 0);
         
         console.log('📊 [DEBUG] Totales finales:', { totalFacturado, totalPagado, deudaTotal });
         
         res.json({
-            doctores: doctoresProcesados,
-            totalDoctores: doctoresProcesados.length,
+            doctores: doctoresConOrdenes,
+            totalDoctores: doctoresConOrdenes.length,
             deudaTotal: deudaTotal,
             totalFacturado: totalFacturado,
             totalPagado: totalPagado
@@ -255,11 +342,13 @@ const getReporteDoctores = async (req, res) => {
 
     } catch (error) {
         logger.error('Error en reporte de doctores:', error);
+        console.error('Error detallado:', error);
         res.status(500).json({ error: 'Error al generar reporte de doctores' });
     }
 };
+
 // ============================================
-// REPORTE DE SERVICIOS (basado en detalles_orden)
+// REPORTE DE SERVICIOS
 // ============================================
 const getReporteServicios = async (req, res) => {
     try {
@@ -286,22 +375,16 @@ const getReporteServicios = async (req, res) => {
 };
 
 // ============================================
-// REPORTE DE MOROSIDAD (usando detalles_orden)
+// REPORTE DE MOROSIDAD
 // ============================================
-// reporteController.js - REEMPLAZAR getReporteMorosidad
-
-// reporteController.js - MODIFICAR getReporteMorosidad
-
 const getReporteMorosidad = async (req, res) => {
     try {
-        // ✅ Obtener fecha/hora actual del servidor
         const ahora = new Date();
         const fechaActual = ahora.toISOString().split('T')[0];
         const horaActual = ahora.toTimeString().slice(0, 8);
         
         console.log('🔍 [DEBUG] Fecha actual:', fechaActual, 'Hora:', horaActual);
         
-        // ✅ PRIMERO: Obtener todas las órdenes pendientes con sus detalles
         const ordenesConDetalles = await sequelize.query(`
             SELECT 
                 o.id as orden_id,
@@ -325,7 +408,6 @@ const getReporteMorosidad = async (req, res) => {
         
         console.log(`📊 [DEBUG] Órdenes con detalles encontradas: ${ordenesConDetalles.length}`);
         
-        // ✅ Agrupar por orden y determinar si está vencida
         const ordenesMap = new Map();
         
         for (const row of ordenesConDetalles) {
@@ -345,7 +427,6 @@ const getReporteMorosidad = async (req, res) => {
             
             const ordenData = ordenesMap.get(ordenId);
             
-            // ✅ Verificar si este detalle está vencido
             let detalleVencido = false;
             if (row.fecha_limite) {
                 const [year, month, day] = row.fecha_limite.split('-').map(Number);
@@ -377,7 +458,6 @@ const getReporteMorosidad = async (req, res) => {
             });
         }
         
-        // ✅ Agrupar por doctor
         const doctoresMap = new Map();
         
         for (const [ordenId, orden] of ordenesMap) {
@@ -401,20 +481,17 @@ const getReporteMorosidad = async (req, res) => {
             doctorData.ordenes.push(orden);
             doctorData.total_ordenes += 1;
             
-            // ✅ Calcular facturado (suma de todos los detalles)
             let facturadoOrden = 0;
             for (const det of orden.detalles) {
                 facturadoOrden += det.precio_unitario * det.cantidad;
             }
             doctorData.total_facturado += facturadoOrden;
             
-            // ✅ Si la orden tiene al menos un servicio vencido, contar como vencida
             if (orden.tieneVencido) {
                 doctorData.ordenes_vencidas += 1;
             }
         }
         
-        // ✅ Calcular pagos por doctor
         for (const [doctorKey, doctorData] of doctoresMap) {
             const pagosResult = await sequelize.query(`
                 SELECT COALESCE(SUM(p.monto), 0) as total_pagado
@@ -430,60 +507,52 @@ const getReporteMorosidad = async (req, res) => {
             doctorData.total_pagado = parseFloat(pagosResult[0]?.total_pagado) || 0;
         }
         
-// reporteController.js - MODIFICAR getReporteMorosidad (solo la parte de días de mora)
-
-// ✅ Calcular días de mora (usando FLOOR con comparación EXACTA de horas)
-for (const [doctorKey, doctorData] of doctoresMap) {
-    let totalDias = 0;
-    let countVencidas = 0;
-    
-    for (const orden of doctorData.ordenes) {
-        if (orden.tieneVencido) {
-            // ✅ Buscar el detalle más antiguo vencido
-            let fechaMasAntigua = null;
-            let horaMasAntigua = null;
+        for (const [doctorKey, doctorData] of doctoresMap) {
+            let totalDias = 0;
+            let countVencidas = 0;
             
-            for (const det of orden.detalles) {
-                if (det.vencido && det.fecha_limite) {
-                    if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
-                        fechaMasAntigua = det.fecha_limite;
-                        horaMasAntigua = det.hora_limite || '23:59:59';
+            for (const orden of doctorData.ordenes) {
+                if (orden.tieneVencido) {
+                    let fechaMasAntigua = null;
+                    let horaMasAntigua = null;
+                    
+                    for (const det of orden.detalles) {
+                        if (det.vencido && det.fecha_limite) {
+                            if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
+                                fechaMasAntigua = det.fecha_limite;
+                                horaMasAntigua = det.hora_limite || '23:59:59';
+                            }
+                        }
+                    }
+                    
+                    if (fechaMasAntigua) {
+                        const [year, month, day] = fechaMasAntigua.split('-').map(Number);
+                        let horas = 23, minutos = 59, segundos = 59;
+                        
+                        if (horaMasAntigua) {
+                            const parts = horaMasAntigua.split(':');
+                            horas = parseInt(parts[0]);
+                            minutos = parseInt(parts[1]);
+                            segundos = parseInt(parts[2]) || 0;
+                        }
+                        
+                        const fechaLimiteCompleta = new Date(year, month - 1, day, horas, minutos, segundos);
+                        const ahoraCompleta = new Date(fechaActual + 'T' + horaActual);
+                        
+                        const diffMs = ahoraCompleta.getTime() - fechaLimiteCompleta.getTime();
+                        
+                        if (diffMs > 0) {
+                            const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                            totalDias += diffDias;
+                            countVencidas++;
+                        }
                     }
                 }
             }
             
-            if (fechaMasAntigua) {
-                // ✅ Crear fecha límite COMPLETA con hora
-                const [year, month, day] = fechaMasAntigua.split('-').map(Number);
-                let horas = 23, minutos = 59, segundos = 59;
-                
-                if (horaMasAntigua) {
-                    const parts = horaMasAntigua.split(':');
-                    horas = parseInt(parts[0]);
-                    minutos = parseInt(parts[1]);
-                    segundos = parseInt(parts[2]) || 0;
-                }
-                
-                const fechaLimiteCompleta = new Date(year, month - 1, day, horas, minutos, segundos);
-                const ahoraCompleta = new Date(fechaActual + 'T' + horaActual);
-                
-                // ✅ Calcular diferencia en milisegundos y luego en días
-                const diffMs = ahoraCompleta.getTime() - fechaLimiteCompleta.getTime();
-                
-                // ✅ Si la diferencia es positiva, calcular días completos (FLOOR)
-                if (diffMs > 0) {
-                    const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-                    totalDias += diffDias;
-                    countVencidas++;
-                }
-            }
+            doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
         }
-    }
-    
-    doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
-}
         
-        // ✅ Convertir a array y calcular deuda
         const deudasConDeuda = Array.from(doctoresMap.values())
             .map(d => {
                 const deuda = d.total_facturado - d.total_pagado;
@@ -508,7 +577,6 @@ for (const [doctorKey, doctorData] of doctoresMap) {
         };
         
         console.log('📊 [DEBUG] Resumen morosidad:', JSON.stringify(resumen, null, 2));
-        console.log('📊 [DEBUG] Detalle:', JSON.stringify(deudasConDeuda, null, 2));
         
         res.json({
             detalle: deudasConDeuda,
@@ -524,8 +592,6 @@ for (const [doctorKey, doctorData] of doctoresMap) {
 // ============================================
 // REPORTE DE PRODUCTIVIDAD
 // ============================================
-// reporteController.js - CORREGIR getReporteProductividad
-
 const getReporteProductividad = async (req, res) => {
     try {
         const rendimiento = await sequelize.query(`
@@ -644,8 +710,12 @@ const getTendenciaMensual = async (req, res) => {
 };
 
 // ============================================
-// EXPORTAR A EXCEL (ACTUALIZADO)
+// FUNCIONES DE EXPORTACIÓN (resumidas)
 // ============================================
+// reporteController.js - MODIFICAR exportarReporte (versión optimizada)
+
+// reporteController.js - REEMPLAZAR exportarReporte (versión SIMPLIFICADA)
+
 const exportarReporte = async (req, res) => {
     try {
         const { tipo } = req.params;
@@ -656,127 +726,84 @@ const exportarReporte = async (req, res) => {
             fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } }
         };
 
-        if (tipo === 'todos') {
-            const todos = await getTodosReportesData();
-            let filename = `reportes_completos_${new Date().toISOString().split('T')[0]}.xlsx`;
+        if (tipo === 'todos' || tipo === 'doctores') {
+            // ✅ Obtener solo datos de doctores (más rápido)
+            const doctores = await getReporteDoctoresData();
             
-            // Hoja de Ingresos
-            if (todos.ingresos && todos.ingresos.length > 0) {
-                const wsIngresos = workbook.addWorksheet('Ingresos');
-                const headersIngresos = Object.keys(todos.ingresos[0]);
-                wsIngresos.addRow(headersIngresos);
-                wsIngresos.getRow(1).eachCell((cell) => {
-                    cell.font = headerStyle.font;
-                    cell.fill = headerStyle.fill;
-                });
-                todos.ingresos.forEach(item => wsIngresos.addRow(Object.values(item)));
-                wsIngresos.columns.forEach(col => col.width = 15);
-            }
+            let filename = `reporte_doctores_${new Date().toISOString().split('T')[0]}.xlsx`;
             
-            // Hoja de Doctores
-            if (todos.doctores && todos.doctores.length > 0) {
+            // ✅ Hoja de Doctores
+            if (doctores && doctores.length > 0) {
                 const wsDoctores = workbook.addWorksheet('Doctores');
-                const headersDoctores = ['doctor', 'telefono', 'total_ordenes', 'ordenes_pendientes', 'ordenes_vencidas', 'total_facturado', 'total_pagado', 'deuda_total'];
+                const headersDoctores = ['doctor', 'telefono', 'total_ordenes', 'ordenes_pendientes', 
+                                         'ordenes_terminadas', 'total_facturado', 'total_pagado', 'deuda_total'];
                 wsDoctores.addRow(headersDoctores);
                 wsDoctores.getRow(1).eachCell((cell) => {
                     cell.font = headerStyle.font;
                     cell.fill = headerStyle.fill;
                 });
-                todos.doctores.forEach(item => wsDoctores.addRow(Object.values(item)));
+                doctores.forEach(item => wsDoctores.addRow(Object.values(item)));
                 wsDoctores.columns.forEach(col => col.width = 20);
-            }
-            
-            // Hoja de Servicios
-            if (todos.servicios && todos.servicios.length > 0) {
-                const wsServicios = workbook.addWorksheet('Servicios');
-                const headersServicios = ['nombre', 'cantidad', 'total_facturado', 'precio_promedio'];
-                wsServicios.addRow(headersServicios);
-                wsServicios.getRow(1).eachCell((cell) => {
-                    cell.font = headerStyle.font;
-                    cell.fill = headerStyle.fill;
-                });
-                todos.servicios.forEach(item => wsServicios.addRow(Object.values(item)));
-                wsServicios.columns.forEach(col => col.width = 25);
-            }
-            
-            // Hoja de Morosidad
-            if (todos.morosidad && todos.morosidad.length > 0) {
-                const wsMorosidad = workbook.addWorksheet('Morosidad');
-                const headersMorosidad = ['doctor', 'telefono', 'ordenes', 'vencidas', 'deuda', 'diasMora'];
-                wsMorosidad.addRow(headersMorosidad);
-                wsMorosidad.getRow(1).eachCell((cell) => {
-                    cell.font = headerStyle.font;
-                    cell.fill = headerStyle.fill;
-                });
-                todos.morosidad.forEach(item => wsMorosidad.addRow(Object.values(item)));
-                wsMorosidad.columns.forEach(col => col.width = 18);
-            }
-            
-            // Hoja de Productividad
-            if (todos.productividad && todos.productividad.length > 0) {
-                const wsProductividad = workbook.addWorksheet('Productividad');
-                const headersProductividad = ['doctor', 'completadas', 'pendientes', 'eficiencia'];
-                wsProductividad.addRow(headersProductividad);
-                wsProductividad.getRow(1).eachCell((cell) => {
-                    cell.font = headerStyle.font;
-                    cell.fill = headerStyle.fill;
-                });
-                todos.productividad.forEach(item => wsProductividad.addRow(Object.values(item)));
-                wsProductividad.columns.forEach(col => col.width = 20);
+            } else {
+                const wsDoctores = workbook.addWorksheet('Doctores');
+                wsDoctores.addRow(['No hay datos de doctores']);
             }
             
             const buffer = await workbook.xlsx.writeBuffer();
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
             res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
             res.send(buffer);
-        } else {
-            let data = [];
-            let filename = `reporte_${tipo}_${new Date().toISOString().split('T')[0]}.xlsx`;
-
-            switch(tipo) {
-                case 'ingresos':
-                    data = await getReporteIngresosData(req.query);
-                    break;
-                case 'doctores':
-                    data = await getReporteDoctoresData();
-                    break;
-                case 'servicios':
-                    data = await getReporteServiciosData();
-                    break;
-                case 'morosidad':
-                    data = await getReporteMorosidadData();
-                    break;
-                case 'productividad':
-                    data = await getReporteProductividadData();
-                    break;
-                default:
-                    return res.status(400).json({ error: 'Tipo de reporte no válido' });
-            }
-
-            const worksheet = workbook.addWorksheet('Reporte');
-            if (data && data.length > 0) {
-                const headers = Object.keys(data[0]);
-                worksheet.addRow(headers);
-                worksheet.getRow(1).eachCell((cell) => {
-                    cell.font = headerStyle.font;
-                    cell.fill = headerStyle.fill;
-                });
-                data.forEach(item => worksheet.addRow(Object.values(item)));
-                worksheet.columns.forEach(column => {
-                    let maxLength = 0;
-                    column.eachCell({ includeEmpty: true }, (cell) => {
-                        const cellValue = cell.value ? cell.value.toString() : '';
-                        maxLength = Math.max(maxLength, cellValue.length);
-                    });
-                    column.width = Math.min(maxLength + 2, 50);
-                });
-            }
-
-            const buffer = await workbook.xlsx.writeBuffer();
-            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-            res.send(buffer);
+            return;
         }
+        
+        // ✅ Para otros tipos de reporte
+        let data = [];
+        let filename = `reporte_${tipo}_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+        switch(tipo) {
+            case 'ingresos':
+                data = await getReporteIngresosData({ 
+                    fechaInicio: new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0],
+                    fechaFin: new Date().toISOString().split('T')[0],
+                    grupo: 'mes' 
+                });
+                break;
+            case 'servicios':
+                data = await getReporteServiciosData();
+                break;
+            case 'morosidad':
+                data = await getReporteMorosidadData();
+                break;
+            case 'productividad':
+                data = await getReporteProductividadData();
+                break;
+            default:
+                return res.status(400).json({ error: 'Tipo de reporte no válido' });
+        }
+
+        const worksheet = workbook.addWorksheet('Reporte');
+        if (data && data.length > 0) {
+            const headers = Object.keys(data[0]);
+            worksheet.addRow(headers);
+            worksheet.getRow(1).eachCell((cell) => {
+                cell.font = headerStyle.font;
+                cell.fill = headerStyle.fill;
+            });
+            data.forEach(item => worksheet.addRow(Object.values(item)));
+            worksheet.columns.forEach(column => {
+                let maxLength = 0;
+                column.eachCell({ includeEmpty: true }, (cell) => {
+                    const cellValue = cell.value ? cell.value.toString() : '';
+                    maxLength = Math.max(maxLength, cellValue.length);
+                });
+                column.width = Math.min(maxLength + 2, 50);
+            });
+        }
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(buffer);
 
     } catch (error) {
         logger.error('Error exportando reporte:', error);
@@ -829,19 +856,11 @@ async function getReporteIngresosData(params) {
     }));
 }
 
-// reporteController.js - CORREGIR getReporteDoctoresData
-
-// reporteController.js - CORREGIR getReporteDoctoresData (misma lógica que getReporteDoctores)
-
-// reporteController.js - CORREGIR getReporteDoctoresData (versión definitiva)
-
 async function getReporteDoctoresData() {
-    // Primero obtener datos detallados por orden
-    const doctoresPorOrden = await sequelize.query(`
+    const doctores = await sequelize.query(`
         SELECT 
             d.nombre as doctor,
             d.telefono_whatsapp as telefono,
-            o.id as orden_id,
             COUNT(DISTINCT o.id) as total_ordenes,
             COUNT(DISTINCT CASE WHEN o.estado = 'pendiente' THEN o.id END) as ordenes_pendientes,
             COUNT(DISTINCT CASE WHEN o.estado = 'terminado' THEN o.id END) as ordenes_terminadas,
@@ -855,51 +874,19 @@ async function getReporteDoctoresData() {
         LEFT JOIN ordenes o ON d.id = o.doctor_id
         LEFT JOIN detalles_orden do ON o.id = do.orden_id
         WHERE d.activo = TRUE
-        GROUP BY d.nombre, d.telefono_whatsapp, o.id
+        GROUP BY d.nombre, d.telefono_whatsapp
     `, { type: sequelize.QueryTypes.SELECT });
 
-    console.log('📊 [DEBUG] Doctores por orden para Excel:', JSON.stringify(doctoresPorOrden, null, 2));
-
-    // Agrupar por doctor
-    const doctoresMap = new Map();
-
-    for (const row of doctoresPorOrden) {
-        const key = row.doctor;
-        if (!doctoresMap.has(key)) {
-            doctoresMap.set(key, {
-                doctor: row.doctor,
-                telefono: row.telefono,
-                total_ordenes: 0,
-                ordenes_pendientes: 0,
-                ordenes_terminadas: 0,
-                total_facturado: 0,
-                total_pagado: 0
-            });
-        }
-
-        const doctorData = doctoresMap.get(key);
-        doctorData.total_ordenes += Number(row.total_ordenes) || 0;
-        doctorData.ordenes_pendientes += Number(row.ordenes_pendientes) || 0;
-        doctorData.ordenes_terminadas += Number(row.ordenes_terminadas) || 0;
-        doctorData.total_facturado += Number(row.total_facturado) || 0;
-        doctorData.total_pagado += Number(row.total_pagado) || 0;
-    }
-
-    // Convertir a array y calcular deuda
-    const resultado = Array.from(doctoresMap.values()).map(d => ({
+    return doctores.map(d => ({
         doctor: d.doctor,
         telefono: d.telefono || '',
-        total_ordenes: d.total_ordenes,
-        ordenes_pendientes: d.ordenes_pendientes,
-        ordenes_terminadas: d.ordenes_terminadas,
-        total_facturado: d.total_facturado,
-        total_pagado: d.total_pagado,
-        deuda_total: d.total_facturado - d.total_pagado
+        total_ordenes: Number(d.total_ordenes) || 0,
+        ordenes_pendientes: Number(d.ordenes_pendientes) || 0,
+        ordenes_terminadas: Number(d.ordenes_terminadas) || 0,
+        total_facturado: Number(d.total_facturado) || 0,
+        total_pagado: Number(d.total_pagado) || 0,
+        deuda_total: Number(d.total_facturado) - Number(d.total_pagado)
     }));
-
-    console.log('📊 [DEBUG] Resultado doctores para Excel:', JSON.stringify(resultado, null, 2));
-
-    return resultado;
 }
 
 async function getReporteServiciosData() {
@@ -923,19 +910,12 @@ async function getReporteServiciosData() {
     }));
 }
 
-
-
-// reporteController.js - CORRECTA (con Math.floor)
 async function getReporteMorosidadData() {
     try {
-        // ✅ Obtener fecha/hora actual del servidor
         const ahora = new Date();
         const fechaActual = ahora.toISOString().split('T')[0];
         const horaActual = ahora.toTimeString().slice(0, 8);
         
-        console.log('🔍 [DEBUG EXPORT] Fecha actual:', fechaActual, 'Hora:', horaActual);
-        
-        // ✅ Obtener todas las órdenes pendientes con sus detalles
         const ordenesConDetalles = await sequelize.query(`
             SELECT 
                 o.id as orden_id,
@@ -956,162 +936,40 @@ async function getReporteMorosidadData() {
             AND d.activo = TRUE
         `, { type: sequelize.QueryTypes.SELECT });
         
-        console.log(`📊 [DEBUG EXPORT] Órdenes con detalles: ${ordenesConDetalles.length}`);
-        
-        // ✅ Agrupar por orden y determinar si está vencida
-        const ordenesMap = new Map();
-        
-        for (const row of ordenesConDetalles) {
-            const ordenId = row.orden_id;
-            
-            if (!ordenesMap.has(ordenId)) {
-                ordenesMap.set(ordenId, {
-                    orden_id: ordenId,
-                    doctor_id: row.doctor_id,
-                    doctor: row.doctor,
-                    telefono: row.telefono || '',
-                    total_pagado: parseFloat(row.total_pagado) || 0,
-                    detalles: [],
-                    tieneVencido: false
-                });
-            }
-            
-            const ordenData = ordenesMap.get(ordenId);
-            
-            // ✅ Verificar si este detalle está vencido
-            let detalleVencido = false;
-            if (row.fecha_limite) {
-                const [year, month, day] = row.fecha_limite.split('-').map(Number);
-                let horas = 23, minutos = 59, segundos = 59;
-                
-                if (row.hora_limite) {
-                    const parts = row.hora_limite.split(':');
-                    horas = parseInt(parts[0]);
-                    minutos = parseInt(parts[1]);
-                    segundos = 0;
-                }
-                
-                const fechaLimite = new Date(year, month - 1, day, horas, minutos, segundos);
-                const ahoraDate = new Date(fechaActual + 'T' + horaActual);
-                
-                if (fechaLimite.getTime() < ahoraDate.getTime()) {
-                    detalleVencido = true;
-                    ordenData.tieneVencido = true;
-                }
-            }
-            
-            ordenData.detalles.push({
-                fecha_limite: row.fecha_limite,
-                hora_limite: row.hora_limite,
-                precio_unitario: parseFloat(row.precio_unitario) || 0,
-                cantidad: parseInt(row.cantidad) || 1,
-                vencido: detalleVencido
-            });
-        }
-        
-        // ✅ Agrupar por doctor
         const doctoresMap = new Map();
         
-        for (const [ordenId, orden] of ordenesMap) {
-            const doctorKey = orden.doctor_id;
+        for (const row of ordenesConDetalles) {
+            const doctorKey = row.doctor_id;
             
             if (!doctoresMap.has(doctorKey)) {
                 doctoresMap.set(doctorKey, {
-                    doctor: orden.doctor,
-                    telefono: orden.telefono,
-                    ordenes: 0,
-                    vencidas: 0,
+                    doctor: row.doctor,
+                    telefono: row.telefono || '',
                     total_facturado: 0,
-                    total_pagado: 0,
-                    diasMora: 0
+                    total_pagado: 0
                 });
             }
             
             const doctorData = doctoresMap.get(doctorKey);
-            doctorData.ordenes += 1;
-            
-            // ✅ Calcular facturado (suma de todos los detalles)
-            let facturadoOrden = 0;
-            for (const det of orden.detalles) {
-                facturadoOrden += det.precio_unitario * det.cantidad;
-            }
-            doctorData.total_facturado += facturadoOrden;
-            doctorData.total_pagado += orden.total_pagado;
-            
-            // ✅ Si la orden tiene al menos un servicio vencido, contar como vencida
-            if (orden.tieneVencido) {
-                doctorData.vencidas += 1;
-            }
+            const precio = parseFloat(row.precio_unitario) || 0;
+            const cantidad = parseInt(row.cantidad) || 1;
+            doctorData.total_facturado += precio * cantidad;
+            doctorData.total_pagado += parseFloat(row.total_pagado) || 0;
         }
         
-      // reporteController.js - MODIFICAR getReporteMorosidadData (misma corrección)
-
-// ✅ Calcular días de mora (usando FLOOR con comparación EXACTA de horas)
-for (const [doctorKey, doctorData] of doctoresMap) {
-    let totalDias = 0;
-    let countVencidas = 0;
-    
-    for (const [ordenId, orden] of ordenesMap) {
-        if (orden.doctor_id === doctorKey && orden.tieneVencido) {
-            // Buscar el detalle más antiguo vencido
-            let fechaMasAntigua = null;
-            let horaMasAntigua = null;
-            
-            for (const det of orden.detalles) {
-                if (det.vencido && det.fecha_limite) {
-                    if (!fechaMasAntigua || det.fecha_limite < fechaMasAntigua) {
-                        fechaMasAntigua = det.fecha_limite;
-                        horaMasAntigua = det.hora_limite || '23:59:59';
-                    }
-                }
-            }
-            
-            if (fechaMasAntigua) {
-                // ✅ Crear fecha límite COMPLETA con hora
-                const [year, month, day] = fechaMasAntigua.split('-').map(Number);
-                let horas = 23, minutos = 59, segundos = 59;
-                
-                if (horaMasAntigua) {
-                    const parts = horaMasAntigua.split(':');
-                    horas = parseInt(parts[0]);
-                    minutos = parseInt(parts[1]);
-                    segundos = parseInt(parts[2]) || 0;
-                }
-                
-                const fechaLimiteCompleta = new Date(year, month - 1, day, horas, minutos, segundos);
-                const ahoraCompleta = new Date(fechaActual + 'T' + horaActual);
-                
-                // ✅ Calcular diferencia en milisegundos y luego en días
-                const diffMs = ahoraCompleta.getTime() - fechaLimiteCompleta.getTime();
-                
-                if (diffMs > 0) {
-                    const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-                    totalDias += diffDias;
-                    countVencidas++;
-                }
-            }
-        }
-    }
-    
-    doctorData.diasMora = countVencidas > 0 ? Math.round(totalDias / countVencidas) : 0;
-}
-        
-        // ✅ Convertir a array y calcular deuda
         const resultado = Array.from(doctoresMap.values())
             .map(d => {
                 const deuda = d.total_facturado - d.total_pagado;
                 return {
                     doctor: d.doctor,
                     telefono: d.telefono || '',
-                    ordenes: d.ordenes,
-                    vencidas: d.vencidas,
                     deuda: deuda,
-                    diasMora: d.diasMora
+                    ordenes: 0,
+                    vencidas: 0,
+                    diasMora: 0
                 };
             })
             .filter(d => d.deuda > 0);
-        
-        console.log('📊 [DEBUG EXPORT] Resultado morosidad para Excel:', JSON.stringify(resultado, null, 2));
         
         return resultado;
         
@@ -1119,6 +977,25 @@ for (const [doctorKey, doctorData] of doctoresMap) {
         logger.error('Error en getReporteMorosidadData:', error);
         return [];
     }
+}
+
+async function getReporteProductividadData() {
+    const rendimiento = await sequelize.query(`
+        SELECT 
+            d.nombre as doctor,
+            COUNT(DISTINCT CASE WHEN o.estado = 'terminado' THEN o.id END) as completadas,
+            COUNT(DISTINCT CASE WHEN o.estado = 'pendiente' THEN o.id END) as pendientes
+        FROM doctores d
+        LEFT JOIN ordenes o ON d.id = o.doctor_id
+        WHERE d.activo = TRUE
+        GROUP BY d.nombre
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    return rendimiento.map(r => ({
+        doctor: r.doctor,
+        completadas: Number(r.completadas) || 0,
+        pendientes: Number(r.pendientes) || 0
+    }));
 }
 
 async function getTodosReportesData() {
@@ -1141,63 +1018,198 @@ async function getTodosReportesData() {
 }
 
 // ============================================
-// EXPORTACIÓN
+// EXPORTAR REPORTE POR DOCTOR
 // ============================================
-
-// Agregar este endpoint en reporteController.js
-// reporteController.js - MODIFICAR exportarReportePorDoctor (agregar hoja de pagos)
+// reporteController.js - REEMPLAZAR exportarReportePorDoctor
 
 // reporteController.js - MODIFICAR exportarReportePorDoctor
+// reporteController.js - REEMPLAZAR COMPLETAMENTE exportarReportePorDoctor
 
-// reporteController.js - REEMPLAZAR exportarReportePorDoctor (sin duplicados)
+// reporteController.js - REEMPLAZAR COMPLETAMENTE exportarReportePorDoctor
 
 const exportarReportePorDoctor = async (req, res) => {
     try {
         const { doctorId } = req.params;
+        const { paciente } = req.query;
+        
         const workbook = new ExcelJS.Workbook();
         
-        // ✅ Obtener datos del doctor CON total_pagado correcto
-        const doctorData = await sequelize.query(`
+        let replacements = { doctorId };
+        let pacienteFiltro = '';
+        let esNumeroOrden = false;
+        let ordenEspecifica = null;
+        
+        // ✅ DETECTAR SI EL PACIENTE ES UN NÚMERO DE ORDEN
+        if (paciente && paciente.trim() !== '') {
+            const pacienteTrim = paciente.trim();
+            // Si empieza con ORD- es un número de orden
+            if (pacienteTrim.toUpperCase().startsWith('ORD-')) {
+                esNumeroOrden = true;
+                
+                // ✅ Buscar la orden específica
+                const ordenResult = await sequelize.query(`
+                    SELECT o.id, o.id_externo, o.doctor_id, o.total, o.estado
+                    FROM ordenes o
+                    WHERE o.id_externo = :ordenId
+                `, { 
+                    replacements: { ordenId: pacienteTrim },
+                    type: sequelize.QueryTypes.SELECT 
+                });
+                
+                if (ordenResult.length > 0) {
+                    ordenEspecifica = ordenResult[0];
+                    // ✅ Usar el doctor_id de la orden encontrada
+                    replacements.doctorId = ordenEspecifica.doctor_id;
+                    
+                    // ✅ Filtrar SOLO por esta orden específica
+                    pacienteFiltro = `
+                        AND o.id = :ordenIdInterno
+                    `;
+                    replacements.ordenIdInterno = ordenEspecifica.id;
+                } else {
+                    // Si no se encuentra la orden, retornar reporte vacío
+                    const wsResumen = workbook.addWorksheet('Resumen');
+                    wsResumen.addRow([`No se encontró la orden "${pacienteTrim}"`]);
+                    const buffer = await workbook.xlsx.writeBuffer();
+                    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                    res.setHeader('Content-Disposition', `attachment; filename="reporte_no_encontrado.xlsx"`);
+                    res.send(buffer);
+                    return;
+                }
+            } else {
+                // ✅ Búsqueda normal por paciente
+                const pacienteLower = paciente.toLowerCase();
+                pacienteFiltro = `
+                    AND (
+                        LOWER(o.cliente_nombre) LIKE :pacienteLower
+                        OR LOWER(do.cliente_nombre) LIKE :pacienteLower
+                        OR LOWER(o.cliente_codigo) LIKE :pacienteCodigo
+                        OR LOWER(do.cliente_codigo) LIKE :pacienteCodigo
+                    )
+                `;
+                replacements.pacienteLower = `%${pacienteLower}%`;
+                replacements.pacienteCodigo = `%${pacienteLower}%`;
+            }
+        }
+        
+        // ============================================
+        // ✅ HOJA 1: RESUMEN
+        // ============================================
+        
+        // ✅ Información del doctor
+        const doctorInfo = await sequelize.query(`
             SELECT 
                 d.nombre as doctor,
                 d.telefono_whatsapp as telefono,
-                d.direccion,
-                COUNT(DISTINCT o.id) as total_ordenes,
-                COUNT(DISTINCT CASE WHEN o.estado = 'pendiente' THEN o.id END) as ordenes_pendientes,
-                COUNT(DISTINCT CASE WHEN o.estado = 'terminado' THEN o.id END) as ordenes_terminadas,
-                COALESCE(SUM(do.precio_unitario * do.cantidad), 0) as total_facturado,
-                COALESCE((
-                    SELECT SUM(p.monto) 
-                    FROM pagos p 
-                    WHERE p.orden_id = o.id
-                ), 0) as total_pagado
+                d.direccion
             FROM doctores d
-            LEFT JOIN ordenes o ON d.id = o.doctor_id
-            LEFT JOIN detalles_orden do ON o.id = do.orden_id
             WHERE d.id = :doctorId AND d.activo = TRUE
-            GROUP BY d.nombre, d.telefono_whatsapp, d.direccion, o.id
-        `, { replacements: { doctorId }, type: sequelize.QueryTypes.SELECT });
+        `, { replacements, type: sequelize.QueryTypes.SELECT });
         
-        // ✅ Calcular totales manualmente (sumar todas las órdenes)
-        let totalFacturado = 0;
-        let totalPagado = 0;
-        let totalOrdenes = 0;
-        let totalPendientes = 0;
-        let totalTerminadas = 0;
+        const doctor = doctorInfo[0] || {};
         
-        doctorData.forEach(row => {
-            totalFacturado += parseFloat(row.total_facturado) || 0;
-            totalPagado += parseFloat(row.total_pagado) || 0;
-            totalOrdenes += parseInt(row.total_ordenes) || 0;
-            totalPendientes += parseInt(row.ordenes_pendientes) || 0;
-            totalTerminadas += parseInt(row.ordenes_terminadas) || 0;
+        // ✅ Total Facturado (solo del paciente/orden filtrado)
+        let facturadoQuery = `
+            SELECT COALESCE(SUM(do.precio_unitario * do.cantidad), 0) as total_facturado
+            FROM ordenes o
+            JOIN detalles_orden do ON o.id = do.orden_id
+            WHERE o.doctor_id = :doctorId
+        `;
+        if (pacienteFiltro) {
+            facturadoQuery += pacienteFiltro;
+        }
+        const facturadoResult = await sequelize.query(facturadoQuery, { 
+            replacements, 
+            type: sequelize.QueryTypes.SELECT 
         });
+        const totalFacturado = parseFloat(facturadoResult[0]?.total_facturado) || 0;
         
-        const doctor = doctorData[0] || {};
+        // ✅ Total Pagado (solo del paciente/orden filtrado)
+        let pagadoQuery = `
+            SELECT COALESCE(SUM(p.monto), 0) as total_pagado
+            FROM pagos p
+            JOIN ordenes o ON p.orden_id = o.id
+            LEFT JOIN detalles_orden do ON do.id = JSON_UNQUOTE(JSON_EXTRACT(p.observaciones, '$.detalle_id'))
+            WHERE o.doctor_id = :doctorId
+        `;
+        if (pacienteFiltro) {
+            pagadoQuery += pacienteFiltro;
+        }
+        const pagadoResult = await sequelize.query(pagadoQuery, { 
+            replacements, 
+            type: sequelize.QueryTypes.SELECT 
+        });
+        const totalPagado = parseFloat(pagadoResult[0]?.total_pagado) || 0;
         const deudaTotal = totalFacturado - totalPagado;
         
-        // ✅ Obtener órdenes detalladas del doctor
-        const ordenes = await sequelize.query(`
+        // ✅ Contar órdenes (solo del paciente/orden filtrado)
+        let ordenesQuery = `
+            SELECT 
+                COUNT(DISTINCT o.id) as total_ordenes,
+                COUNT(DISTINCT CASE WHEN o.estado = 'pendiente' THEN o.id END) as ordenes_pendientes,
+                COUNT(DISTINCT CASE WHEN o.estado = 'terminado' THEN o.id END) as ordenes_terminadas
+            FROM ordenes o
+            JOIN detalles_orden do ON o.id = do.orden_id
+            WHERE o.doctor_id = :doctorId
+        `;
+        if (pacienteFiltro) {
+            ordenesQuery += pacienteFiltro;
+        }
+        const ordenesResult = await sequelize.query(ordenesQuery, { 
+            replacements, 
+            type: sequelize.QueryTypes.SELECT 
+        });
+        const ordenes = ordenesResult[0] || { total_ordenes: 0, ordenes_pendientes: 0, ordenes_terminadas: 0 };
+        
+        // ✅ HOJA 1: RESUMEN
+        const wsResumen = workbook.addWorksheet('Resumen');
+        const headerStyle = { 
+            font: { bold: true, color: { argb: 'FFFFFFFF' } }, 
+            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } } 
+        };
+        
+        const titleStyle = {
+            font: { bold: true, size: 14 },
+            alignment: { horizontal: 'center' }
+        };
+        
+        const titulo = paciente && paciente.trim() !== '' 
+            ? `Reporte del Dr. ${doctor.doctor || 'N/A'} - Paciente: ${paciente}`
+            : `Reporte del Dr. ${doctor.doctor || 'N/A'}`;
+        
+        wsResumen.addRow([titulo]);
+        wsResumen.mergeCells(`A${wsResumen.rowCount}:F${wsResumen.rowCount}`);
+        wsResumen.getRow(wsResumen.rowCount).getCell(1).font = titleStyle.font;
+        wsResumen.addRow([]);
+        
+        wsResumen.addRow(['Doctor:', doctor.doctor || 'N/A']);
+        wsResumen.addRow(['Teléfono:', doctor.telefono || 'N/A']);
+        wsResumen.addRow(['Dirección:', doctor.direccion || 'N/A']);
+        if (paciente && paciente.trim() !== '') {
+            wsResumen.addRow(['Paciente filtrado:', paciente]);
+        }
+        wsResumen.addRow([]);
+        
+        const headers = ['Total Órdenes', 'Pendientes', 'Terminadas', 'Total Facturado', 'Total Pagado', 'Deuda Total'];
+        wsResumen.addRow(headers);
+        wsResumen.getRow(wsResumen.rowCount).eachCell((cell) => { 
+            cell.font = headerStyle.font; 
+            cell.fill = headerStyle.fill; 
+        });
+        wsResumen.addRow([
+            ordenes.total_ordenes || 0,
+            ordenes.ordenes_pendientes || 0,
+            ordenes.ordenes_terminadas || 0,
+            totalFacturado.toFixed(2),
+            totalPagado.toFixed(2),
+            deudaTotal.toFixed(2)
+        ]);
+        wsResumen.columns.forEach(col => col.width = 20);
+        
+        // ============================================
+        // HOJA 2: DETALLE DE ÓRDENES (FILTRADO)
+        // ============================================
+        let detalleQuery = `
             SELECT 
                 o.id_externo as orden,
                 s.nombre as servicio,
@@ -1208,152 +1220,42 @@ const exportarReportePorDoctor = async (req, res) => {
                 do.hora_limite,
                 o.estado,
                 COALESCE(do.cliente_nombre, o.cliente_nombre, '-') as cliente,
-                do.detalle_cliente as detalle_servicio,
-                COALESCE(p.monto_pagado, 0) as pagado_por_orden,
-                (SELECT SUM(do2.precio_unitario * do2.cantidad) 
-                 FROM detalles_orden do2 
-                 WHERE do2.orden_id = do.orden_id) as total_orden
+                COALESCE(do.cliente_codigo, o.cliente_codigo, '-') as codigo,
+                (
+                    SELECT COALESCE(SUM(p.monto), 0) 
+                    FROM pagos p 
+                    WHERE p.orden_id = o.id
+                    AND JSON_UNQUOTE(JSON_EXTRACT(p.observaciones, '$.detalle_id')) = do.id
+                ) as pagado_servicio
             FROM doctores d
             JOIN ordenes o ON d.id = o.doctor_id
             JOIN detalles_orden do ON o.id = do.orden_id
             JOIN servicios s ON do.servicio_id = s.id
-            LEFT JOIN (
-                SELECT orden_id, SUM(monto) as monto_pagado
-                FROM pagos
-                GROUP BY orden_id
-            ) p ON o.id = p.orden_id
             WHERE d.id = :doctorId
-            ORDER BY o.fecha_registro DESC, do.orden ASC
-        `, { replacements: { doctorId }, type: sequelize.QueryTypes.SELECT });
+        `;
+        if (pacienteFiltro) {
+            detalleQuery += pacienteFiltro;
+        }
+        detalleQuery += ` ORDER BY o.fecha_registro DESC, do.orden ASC`;
         
-        // ✅ Obtener pagos detallados del doctor - CORREGIDO: Agrupar por pago para evitar duplicados
-        const pagos = await sequelize.query(`
-            SELECT DISTINCT
-                o.id_externo as orden,
-                p.id as pago_id,
-                p.monto,
-                p.metodo_pago,
-                p.referencia,
-                p.creado_en as fecha_pago
-            FROM pagos p
-            JOIN ordenes o ON p.orden_id = o.id
-            WHERE o.doctor_id = :doctorId
-            ORDER BY p.creado_en DESC
-        `, { replacements: { doctorId }, type: sequelize.QueryTypes.SELECT });
-        
-        // ✅ Para cada pago, obtener el servicio asociado (si existe en observaciones)
-        const pagosConServicio = await Promise.all(pagos.map(async (pago) => {
-            let servicio = '-';
-            let cliente = '-';
-            
-            // ✅ Intentar obtener servicio y cliente desde observaciones
-            if (pago.referencia) {
-                const detalleInfo = await sequelize.query(`
-                    SELECT 
-                        s.nombre as servicio,
-                        COALESCE(do.cliente_nombre, o.cliente_nombre, '-') as cliente
-                    FROM pagos p
-                    JOIN ordenes o ON p.orden_id = o.id
-                    LEFT JOIN detalles_orden do ON do.id = JSON_EXTRACT(p.observaciones, '$.detalle_id')
-                    LEFT JOIN servicios s ON do.servicio_id = s.id
-                    WHERE p.id = :pagoId
-                `, { 
-                    replacements: { pagoId: pago.pago_id },
-                    type: sequelize.QueryTypes.SELECT 
-                });
-                
-                if (detalleInfo && detalleInfo.length > 0) {
-                    servicio = detalleInfo[0].servicio || '-';
-                    cliente = detalleInfo[0].cliente || '-';
-                }
-            }
-            
-            // ✅ Si no se encontró servicio, buscar por orden
-            if (servicio === '-') {
-                const ordenInfo = await sequelize.query(`
-                    SELECT 
-                        s.nombre as servicio,
-                        COALESCE(do.cliente_nombre, o.cliente_nombre, '-') as cliente
-                    FROM ordenes o
-                    JOIN detalles_orden do ON o.id = do.orden_id
-                    JOIN servicios s ON do.servicio_id = s.id
-                    WHERE o.id = (SELECT orden_id FROM pagos WHERE id = :pagoId)
-                    LIMIT 1
-                `, { 
-                    replacements: { pagoId: pago.pago_id },
-                    type: sequelize.QueryTypes.SELECT 
-                });
-                
-                if (ordenInfo && ordenInfo.length > 0) {
-                    servicio = ordenInfo[0].servicio || '-';
-                    cliente = ordenInfo[0].cliente || '-';
-                }
-            }
-            
-            return {
-                orden: pago.orden || '-',
-                servicio: servicio,
-                cliente: cliente,
-                monto: parseFloat(pago.monto).toFixed(2) || '0.00',
-                metodo_pago: pago.metodo_pago || '-',
-                referencia: pago.referencia || '-',
-                fecha_pago: pago.fecha_pago ? new Date(pago.fecha_pago).toLocaleString('es-PE') : '-'
-            };
-        }));
-        
-        // ============================================
-        // HOJA 1: RESUMEN
-        // ============================================
-        const wsResumen = workbook.addWorksheet('Resumen');
-        const headerStyle = { 
-            font: { bold: true, color: { argb: 'FFFFFFFF' } }, 
-            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } } 
-        };
-        
-        wsResumen.addRow(['Doctor:', doctor.doctor || 'N/A']);
-        wsResumen.addRow(['Teléfono:', doctor.telefono || 'N/A']);
-        wsResumen.addRow(['Dirección:', doctor.direccion || 'N/A']);
-        wsResumen.addRow([]);
-        
-        const headers = ['Total Órdenes', 'Pendientes', 'Terminadas', 'Total Facturado', 'Total Pagado', 'Deuda Total'];
-        wsResumen.addRow(headers);
-        wsResumen.getRow(5).eachCell((cell) => { 
-            cell.font = headerStyle.font; 
-            cell.fill = headerStyle.fill; 
+        const ordenesDetalle = await sequelize.query(detalleQuery, { 
+            replacements, 
+            type: sequelize.QueryTypes.SELECT 
         });
-        wsResumen.addRow([
-            totalOrdenes,
-            totalPendientes,
-            totalTerminadas,
-            totalFacturado.toFixed(2),
-            totalPagado.toFixed(2),
-            deudaTotal.toFixed(2)
-        ]);
-        wsResumen.columns.forEach(col => col.width = 20);
         
-        // ============================================
-        // HOJA 2: DETALLE DE ÓRDENES
-        // ============================================
-        if (ordenes.length > 0) {
+        if (ordenesDetalle.length > 0) {
             const wsDetalle = workbook.addWorksheet('Detalle de Órdenes');
-            const detalleHeaders = ['Orden', 'Servicio', 'Precio', 'Cantidad', 'Subtotal', 'Fecha Límite', 'Hora', 'Estado', 'Cliente', 'Detalle Cliente', 'Pagado', 'Saldo'];
+            const detalleHeaders = ['Orden', 'Servicio', 'Precio', 'Cantidad', 'Subtotal', 'Fecha Límite', 'Hora', 'Estado', 'Cliente', 'Código', 'Pagado', 'Saldo'];
             wsDetalle.addRow(detalleHeaders);
             wsDetalle.getRow(1).eachCell((cell) => { 
                 cell.font = headerStyle.font; 
                 cell.fill = headerStyle.fill; 
             });
             
-            ordenes.forEach(o => {
+            for (const o of ordenesDetalle) {
                 const subtotal = parseFloat(o.subtotal) || 0;
-                const totalOrden = parseFloat(o.total_orden) || 0;
-                const pagadoPorOrden = parseFloat(o.pagado_por_orden) || 0;
-                
-                let pagadoPorServicio = 0;
-                if (totalOrden > 0 && pagadoPorOrden > 0) {
-                    pagadoPorServicio = (subtotal / totalOrden) * pagadoPorOrden;
-                }
-                
-                const saldo = subtotal - pagadoPorServicio;
+                const pagadoServicio = parseFloat(o.pagado_servicio) || 0;
+                const saldo = subtotal - pagadoServicio;
                 
                 wsDetalle.addRow([
                     o.orden || '-',
@@ -1365,42 +1267,103 @@ const exportarReportePorDoctor = async (req, res) => {
                     o.hora_limite || '-',
                     o.estado || '-',
                     o.cliente || '-',
-                    o.detalle_servicio || '-',
-                    pagadoPorServicio.toFixed(2),
+                    o.codigo || '-',
+                    pagadoServicio.toFixed(2),
                     saldo.toFixed(2)
                 ]);
-            });
+            }
             wsDetalle.columns.forEach(col => col.width = 18);
+        } else {
+            const wsDetalle = workbook.addWorksheet('Detalle de Órdenes');
+            wsDetalle.addRow(['No hay órdenes para mostrar']);
         }
         
         // ============================================
-        // HOJA 3: DETALLE DE PAGOS
+        // HOJA 3: HISTORIAL DE PAGOS (FILTRADO)
         // ============================================
-        if (pagosConServicio.length > 0) {
-            const wsPagos = workbook.addWorksheet('Detalle de Pagos');
-            const pagosHeaders = ['Orden', 'Servicio', 'Cliente', 'Monto', 'Método', 'Referencia', 'Fecha Pago'];
+        let pagosQueryDetalle = `
+            SELECT 
+                p.creado_en as fecha,
+                p.monto,
+                p.metodo_pago,
+                p.referencia,
+                o.id_externo as orden,
+                COALESCE(s.nombre, 'N/A') as servicio,
+                COALESCE(
+                    CASE 
+                        WHEN do.cliente_nombre IS NOT NULL AND do.cliente_nombre != '' THEN do.cliente_nombre
+                        WHEN o.cliente_nombre IS NOT NULL AND o.cliente_nombre != '' THEN o.cliente_nombre
+                        ELSE NULL
+                    END,
+                    '-'
+                ) as cliente,
+                COALESCE(
+                    CASE 
+                        WHEN do.cliente_codigo IS NOT NULL AND do.cliente_codigo != '' THEN do.cliente_codigo
+                        WHEN o.cliente_codigo IS NOT NULL AND o.cliente_codigo != '' THEN o.cliente_codigo
+                        ELSE NULL
+                    END,
+                    '-'
+                ) as codigo
+            FROM pagos p
+            JOIN ordenes o ON p.orden_id = o.id
+            LEFT JOIN detalles_orden do ON do.id = JSON_UNQUOTE(JSON_EXTRACT(p.observaciones, '$.detalle_id'))
+            LEFT JOIN servicios s ON s.id = do.servicio_id
+            WHERE o.doctor_id = :doctorId
+        `;
+        if (pacienteFiltro) {
+            pagosQueryDetalle += pacienteFiltro;
+        }
+        pagosQueryDetalle += ` ORDER BY p.creado_en DESC`;
+        
+        const pagosDetalle = await sequelize.query(pagosQueryDetalle, { 
+            replacements, 
+            type: sequelize.QueryTypes.SELECT 
+        });
+        
+        if (pagosDetalle.length > 0) {
+            const wsPagos = workbook.addWorksheet('Historial de Pagos');
+            const pagosHeaders = ['Fecha', 'Monto', 'Método', 'Orden', 'Servicio', 'Cliente', 'Código', 'Referencia'];
             wsPagos.addRow(pagosHeaders);
             wsPagos.getRow(1).eachCell((cell) => { 
                 cell.font = headerStyle.font; 
                 cell.fill = headerStyle.fill; 
             });
             
-            pagosConServicio.forEach(p => {
+            pagosDetalle.forEach(p => {
+                let fechaFormateada = '-';
+                if (p.fecha) {
+                    try {
+                        const fecha = new Date(p.fecha);
+                        fechaFormateada = fecha.toLocaleString('es-PE', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        });
+                    } catch (e) {
+                        fechaFormateada = p.fecha;
+                    }
+                }
+                
                 wsPagos.addRow([
-                    p.orden,
-                    p.servicio,
-                    p.cliente,
-                    p.monto,
-                    p.metodo_pago,
-                    p.referencia,
-                    p.fecha_pago
+                    fechaFormateada,
+                    parseFloat(p.monto).toFixed(2),
+                    p.metodo_pago || '-',
+                    p.orden || '-',
+                    p.servicio || '-',
+                    p.cliente || '-',
+                    p.codigo || '-',
+                    p.referencia || '-'
                 ]);
             });
             wsPagos.columns.forEach(col => col.width = 18);
         }
         
         const nombreDoctor = (doctor.doctor || `doctor_${doctorId}`).replace(/\s/g, '_');
-        const filename = `reporte_doctor_${nombreDoctor}_${new Date().toISOString().split('T')[0]}.xlsx`;
+        const pacienteSufijo = paciente && paciente.trim() !== '' ? `_${paciente.replace(/\s/g, '_')}` : '';
+        const filename = `reporte_doctor_${nombreDoctor}${pacienteSufijo}_${new Date().toISOString().split('T')[0]}.xlsx`;
         
         const buffer = await workbook.xlsx.writeBuffer();
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1409,12 +1372,30 @@ const exportarReportePorDoctor = async (req, res) => {
         
     } catch (error) {
         logger.error('Error exportando reporte por doctor:', error);
-        res.status(500).json({ error: 'Error al exportar reporte' });
+        res.status(500).json({ error: 'Error al exportar reporte', details: error.message });
     }
 };
 
+// ✅ Función auxiliar para obtener total de una orden con pagos
+async function getTotalOrdenConPagos(ordenId) {
+    try {
+        const result = await sequelize.query(`
+            SELECT COALESCE(SUM(do.precio_unitario * do.cantidad), 0) as total
+            FROM detalles_orden do
+            WHERE do.orden_id = :ordenId
+        `, { 
+            replacements: { ordenId },
+            type: sequelize.QueryTypes.SELECT 
+        });
+        return parseFloat(result[0]?.total) || 0;
+    } catch (e) {
+        return 0;
+    }
+}
 
-
+// ============================================
+// EXPORTACIÓN
+// ============================================
 module.exports = {
     getReporteIngresos,
     getReporteDoctores,

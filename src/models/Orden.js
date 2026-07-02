@@ -1,4 +1,5 @@
-// models/Orden.js - MODIFICAR servicio_id para que sea nullable
+// models/Orden.js - VERSIÓN ACTUALIZADA CON cliente_codigo
+
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
@@ -21,7 +22,7 @@ const Orden = sequelize.define('Orden', {
     },
     servicio_id: {
         type: DataTypes.INTEGER,
-        allowNull: true,  // ✅ CAMBIAR DE false a true
+        allowNull: true,
         references: {
             model: 'servicios',
             key: 'id'
@@ -66,8 +67,13 @@ const Orden = sequelize.define('Orden', {
     hora_limite: {
         type: DataTypes.TIME
     },
+    // ✅ CAMPOS DE CLIENTE
     cliente_nombre: {
         type: DataTypes.TEXT
+    },
+    cliente_codigo: {
+        type: DataTypes.STRING(50),
+        allowNull: true
     },
     detalle_cliente: {
         type: DataTypes.TEXT,

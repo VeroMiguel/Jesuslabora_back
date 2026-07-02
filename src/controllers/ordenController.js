@@ -5,6 +5,15 @@ const logger = require('../utils/logger');
 const fileService = require('../services/fileService');
 
 // ============================================
+// FUNCIÓN AUXILIAR - Generar código de paciente
+// ============================================
+const generarCodigoPaciente = (nombre, numero) => {
+    const prefijo = nombre ? nombre.substring(0, 3).toUpperCase() : 'PAC';
+    const sufijo = numero ? String(numero).padStart(4, '0') : String(Math.floor(1000 + Math.random() * 9000));
+    return `${prefijo}-${sufijo}`;
+};
+
+// ============================================
 // MÉTODOS PRINCIPALES
 // ============================================
 
@@ -56,7 +65,9 @@ const obtenerOrdenPorId = async (req, res) => {
     }
 };
 
-// Versión original (mantener para compatibilidad)
+// ============================================
+// CREAR ORDEN - CON GENERACIÓN DE CÓDIGO
+// ============================================
 const crearOrden = async (req, res) => {
     const transaction = await sequelize.transaction();
     
@@ -65,7 +76,7 @@ const crearOrden = async (req, res) => {
             return res.status(401).json({ error: 'Usuario no autenticado' });
         }
         
-        const { detalles, doctor_id, pago_inicial, cliente_nombre, detalle_cliente, prioridad, metodo_pago } = req.body;
+        const { detalles, doctor_id, pago_inicial, cliente_nombre, cliente_codigo, detalle_cliente, prioridad, metodo_pago } = req.body;
         
         if (!detalles || !Array.isArray(detalles) || detalles.length === 0) {
             return res.status(400).json({ error: 'Debe agregar al menos un servicio' });
@@ -90,31 +101,84 @@ const crearOrden = async (req, res) => {
             imagen_referencia_url = await fileService.saveFile(req.file, 'ordenes');
         }
         
+        // ✅ GENERAR CÓDIGO DE PACIENTE - Cliente único
+        let clienteCodigo = cliente_codigo || null;
+        if (cliente_nombre && !clienteCodigo) {
+            const ultimoCodigo = await Orden.findOne({
+                where: { 
+                    cliente_nombre: cliente_nombre,
+                    cliente_codigo: { [Op.ne]: null }
+                },
+                order: [['id', 'DESC']],
+                transaction
+            });
+            
+            let numero = 1;
+            if (ultimoCodigo && ultimoCodigo.cliente_codigo) {
+                const partes = ultimoCodigo.cliente_codigo.split('-');
+                if (partes.length === 2) {
+                    const num = parseInt(partes[1]);
+                    if (!isNaN(num)) numero = num + 1;
+                }
+            }
+            clienteCodigo = generarCodigoPaciente(cliente_nombre, numero);
+        }
+        
+        // ✅ GENERAR CÓDIGO DE PACIENTE - Por servicio (clientes diferentes)
+        for (let i = 0; i < detalles.length; i++) {
+            const det = detalles[i];
+            if (det.cliente_nombre && !det.cliente_codigo) {
+                const ultimoCodigo = await DetalleOrden.findOne({
+                    where: { 
+                        cliente_nombre: det.cliente_nombre,
+                        cliente_codigo: { [Op.ne]: null }
+                    },
+                    order: [['id', 'DESC']],
+                    transaction
+                });
+                
+                let numero = 1;
+                if (ultimoCodigo && ultimoCodigo.cliente_codigo) {
+                    const partes = ultimoCodigo.cliente_codigo.split('-');
+                    if (partes.length === 2) {
+                        const num = parseInt(partes[1]);
+                        if (!isNaN(num)) numero = num + 1;
+                    }
+                }
+                det.cliente_codigo = generarCodigoPaciente(det.cliente_nombre, numero);
+            }
+        }
+        
+        // ✅ Crear orden
         const orden = await Orden.create({
             doctor_id,
             total: total,
             prioridad: prioridad || 'normal',
             cliente_nombre: cliente_nombre || null,
+            cliente_codigo: clienteCodigo,
             detalle_cliente: detalle_cliente || null,
             usuario_creo_id: req.usuario.id,
             id_externo: `ORD-${Date.now()}`,
             imagen_referencia_url: imagen_referencia_url
         }, { transaction });
         
-     for (let i = 0; i < detalles.length; i++) {
-    const det = detalles[i];
-    await DetalleOrden.create({
-        orden_id: orden.id,
-        servicio_id: det.servicio_id,
-        cantidad: det.cantidad || 1,
-        precio_unitario: det.precio_unitario,
-        fecha_limite: det.fecha_limite || null,
-        hora_limite: det.hora_limite || null,
-        cliente_nombre: det.cliente_nombre || null,      // ✅ AGREGAR
-        detalle_cliente: det.detalle_cliente || null,    // ✅ AGREGAR
-        orden: i
-    }, { transaction });
-}
+        // ✅ Crear detalles
+        for (let i = 0; i < detalles.length; i++) {
+            const det = detalles[i];
+            await DetalleOrden.create({
+                orden_id: orden.id,
+                servicio_id: det.servicio_id,
+                cantidad: det.cantidad || 1,
+                precio_unitario: det.precio_unitario,
+                fecha_limite: det.fecha_limite || null,
+                hora_limite: det.hora_limite || null,
+                cliente_nombre: det.cliente_nombre || null,
+                cliente_codigo: det.cliente_codigo || null,
+                detalle_cliente: det.detalle_cliente || null,
+                orden: i
+            }, { transaction });
+        }
+        
         if (pago_inicial && parseFloat(pago_inicial) > 0) {
             await Pago.create({
                 orden_id: orden.id,
@@ -149,8 +213,9 @@ const crearOrden = async (req, res) => {
     }
 };
 
-// ordenController.js - REEMPLAZAR el método actualizarOrden completo
-
+// ============================================
+// ACTUALIZAR ORDEN - CON cliente_codigo
+// ============================================
 const actualizarOrden = async (req, res) => {
     const transaction = await sequelize.transaction();
     
@@ -168,18 +233,10 @@ const actualizarOrden = async (req, res) => {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
         
-        const { detalles, doctor_id, cliente_nombre, detalle_cliente, prioridad, pago_inicial } = req.body;
+        const { detalles, doctor_id, cliente_nombre, cliente_codigo, detalle_cliente, prioridad, pago_inicial } = req.body;
         
-        // ✅ Guardar detalles antiguos para conservar imágenes
         const detallesAntiguos = orden.detalles || [];
-        const mapaImagenesAntiguas = new Map();
-        detallesAntiguos.forEach(det => {
-            if (det.imagen_referencia_url) {
-                mapaImagenesAntiguas.set(det.servicio_id, det.imagen_referencia_url);
-            }
-        });
         
-        // ✅ Calcular total correctamente (usar precio_unitario, no cantidad * precio)
         let total = 0;
         if (detalles && Array.isArray(detalles) && detalles.length > 0) {
             for (const det of detalles) {
@@ -190,18 +247,16 @@ const actualizarOrden = async (req, res) => {
             total = orden.total;
         }
         
-        // ✅ Actualizar orden
         await orden.update({
             doctor_id: doctor_id || orden.doctor_id,
             total: total,
             prioridad: prioridad || orden.prioridad,
             cliente_nombre: cliente_nombre !== undefined ? cliente_nombre : orden.cliente_nombre,
+            cliente_codigo: cliente_codigo !== undefined ? cliente_codigo : orden.cliente_codigo,
             detalle_cliente: detalle_cliente !== undefined ? detalle_cliente : orden.detalle_cliente,
         }, { transaction });
         
-        // ✅ Actualizar detalles (NO eliminar si no es necesario)
         if (detalles && Array.isArray(detalles) && detalles.length > 0) {
-            // Eliminar detalles que ya no existen
             const nuevosServicioIds = detalles.map(d => d.servicio_id);
             const detallesAEliminar = detallesAntiguos.filter(det => !nuevosServicioIds.includes(det.servicio_id));
             
@@ -212,19 +267,16 @@ const actualizarOrden = async (req, res) => {
                 await det.destroy({ transaction });
             }
             
-            // Actualizar o crear cada detalle
             for (let i = 0; i < detalles.length; i++) {
                 const det = detalles[i];
                 const detalleExistente = detallesAntiguos.find(d => d.servicio_id === det.servicio_id);
                 
-                // ✅ Conservar imagen antigua si no se subió una nueva
                 let imagenUrl = det.imagen_referencia_url || null;
                 if (!imagenUrl && detalleExistente?.imagen_referencia_url) {
                     imagenUrl = detalleExistente.imagen_referencia_url;
                 }
                 
                 if (detalleExistente) {
-                    // Actualizar existente
                     await detalleExistente.update({
                         servicio_id: det.servicio_id,
                         cantidad: det.cantidad || 1,
@@ -232,12 +284,12 @@ const actualizarOrden = async (req, res) => {
                         fecha_limite: det.fecha_limite || null,
                         hora_limite: det.hora_limite || null,
                         cliente_nombre: det.cliente_nombre || null,
+                        cliente_codigo: det.cliente_codigo || null,
                         detalle_cliente: det.detalle_cliente || null,
                         imagen_referencia_url: imagenUrl,
                         orden: i
                     }, { transaction });
                 } else {
-                    // Crear nuevo
                     await DetalleOrden.create({
                         orden_id: id,
                         servicio_id: det.servicio_id,
@@ -246,6 +298,7 @@ const actualizarOrden = async (req, res) => {
                         fecha_limite: det.fecha_limite || null,
                         hora_limite: det.hora_limite || null,
                         cliente_nombre: det.cliente_nombre || null,
+                        cliente_codigo: det.cliente_codigo || null,
                         detalle_cliente: det.detalle_cliente || null,
                         imagen_referencia_url: imagenUrl,
                         orden: i
@@ -306,18 +359,12 @@ const eliminarOrden = async (req, res) => {
 // MÉTODOS DE ESTADÍSTICAS
 // ============================================
 
-// ordenController.js - REEMPLAZAR obtenerEstadisticas
-
 const obtenerEstadisticas = async (req, res) => {
     try {
-        // ✅ Obtener fecha/hora actual del servidor
         const ahora = new Date();
         const fechaActual = ahora.toISOString().split('T')[0];
         const horaActual = ahora.toTimeString().slice(0, 8);
         
-        console.log('📊 [DEBUG] Fecha actual:', fechaActual, 'Hora:', horaActual);
-        
-        // ✅ Contar órdenes activas (pendientes con saldo > 0)
         const ordenesActivas = await sequelize.query(`
             SELECT COUNT(DISTINCT o.id) as total
             FROM ordenes o
@@ -329,7 +376,6 @@ const obtenerEstadisticas = async (req, res) => {
             ), 0)) > 0
         `, { type: sequelize.QueryTypes.SELECT });
         
-        // ✅ Contar órdenes vencidas (al menos un servicio vencido)
         const ordenesVencidas = await sequelize.query(`
             SELECT COUNT(DISTINCT o.id) as total
             FROM ordenes o
@@ -351,7 +397,6 @@ const obtenerEstadisticas = async (req, res) => {
         
         const ordenesTerminadas = await Orden.count({ where: { estado: 'terminado' } });
         
-        // Caja hoy
         const cajaHoyResult = await sequelize.query(`
             SELECT COALESCE(SUM(monto), 0) as total 
             FROM pagos 
@@ -359,7 +404,6 @@ const obtenerEstadisticas = async (req, res) => {
         `, { type: sequelize.QueryTypes.SELECT });
         const cajaHoy = parseFloat(cajaHoyResult[0]?.total || 0);
         
-        // Caja semana
         const cajaSemanaResult = await sequelize.query(`
             SELECT COALESCE(SUM(monto), 0) as total 
             FROM pagos 
@@ -374,8 +418,6 @@ const obtenerEstadisticas = async (req, res) => {
             caja_hoy: cajaHoy,
             caja_semana: cajaSemana
         };
-        
-        console.log('📊 [DEBUG] Estadísticas:', JSON.stringify(result, null, 2));
         
         res.json(result);
     } catch (error) {
@@ -457,7 +499,7 @@ const obtenerFechaHoraServidor = (req, res) => {
 };
 
 // ============================================
-// IMÁGENES DE REFERENCIA (ORDEN COMPLETA)
+// IMÁGENES DE REFERENCIA
 // ============================================
 
 const actualizarImagenReferencia = async (req, res) => {
@@ -496,13 +538,9 @@ const actualizarImagenReferencia = async (req, res) => {
 // CALENDARIO - FILTROS AVANZADOS
 // ============================================
 
-// ordenController.js - Modificar obtenerOrdenesConFiltrosAvanzados
-
 const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
     try {
         const { doctor_id, fecha_inicio, fecha_fin, tipo_fecha, estado } = req.query;
-        
-        console.log('📅 Filtros recibidos:', { doctor_id, fecha_inicio, fecha_fin, tipo_fecha, estado });
         
         const where = {};
         
@@ -534,7 +572,6 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
             order: [['fecha_registro', 'DESC']]
         });
         
-        // ✅ CORREGIDO: Manejar fecha_registro correctamente
         if (fecha_inicio && fecha_fin && tipo_fecha === 'registro') {
             const fechaInicioDate = new Date(fecha_inicio);
             const fechaFinDate = new Date(fecha_fin);
@@ -542,7 +579,6 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
             ordenes = ordenes.filter(orden => {
                 let fechaRegistro = orden.fecha_registro;
                 
-                // ✅ Si es objeto Date, convertir a string YYYY-MM-DD
                 if (fechaRegistro instanceof Date) {
                     fechaRegistro = fechaRegistro.toISOString().split('T')[0];
                 } else if (typeof fechaRegistro === 'string') {
@@ -555,8 +591,6 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
                 return fechaRegistroDate >= fechaInicioDate && fechaRegistroDate <= fechaFinDate;
             });
         }
-        
-        console.log(`✅ Encontradas ${ordenes.length} órdenes`);
         
         const ordenesConSaldo = ordenes.map(orden => {
             const totalPagado = orden.pagos?.reduce((sum, pago) => sum + Number(pago.monto), 0) || 0;
@@ -576,7 +610,7 @@ const obtenerOrdenesConFiltrosAvanzados = async (req, res) => {
 };
 
 // ============================================
-// NUEVOS MÉTODOS PARA IMÁGENES POR SERVICIO
+// IMÁGENES POR DETALLE DE SERVICIO
 // ============================================
 
 const actualizarImagenDetalle = async (req, res) => {
@@ -650,16 +684,13 @@ const eliminarImagenDetalle = async (req, res) => {
 };
 
 // ============================================
-// EXPORTACIÓN
-// ============================================
-// ============================================
 // ACTUALIZAR DETALLE DE ORDEN (cliente)
 // ============================================
 
 const actualizarDetalleOrden = async (req, res) => {
     try {
         const { detalleId } = req.params;
-        const { cliente_nombre, detalle_cliente } = req.body;
+        const { cliente_nombre, cliente_codigo, detalle_cliente } = req.body;
         
         if (!req.usuario || !req.usuario.id) {
             return res.status(401).json({ error: 'Usuario no autenticado' });
@@ -671,9 +702,11 @@ const actualizarDetalleOrden = async (req, res) => {
             return res.status(404).json({ error: 'Detalle no encontrado' });
         }
         
-        // Actualizar solo los campos permitidos
         if (cliente_nombre !== undefined) {
             detalle.cliente_nombre = cliente_nombre;
+        }
+        if (cliente_codigo !== undefined) {
+            detalle.cliente_codigo = cliente_codigo;
         }
         if (detalle_cliente !== undefined) {
             detalle.detalle_cliente = detalle_cliente;
@@ -681,7 +714,7 @@ const actualizarDetalleOrden = async (req, res) => {
         
         await detalle.save();
         
-        logger.info(`Detalle de orden actualizado - ID: ${detalleId}, Cliente: ${cliente_nombre}`);
+        logger.info(`Detalle de orden actualizado - ID: ${detalleId}, Cliente: ${cliente_nombre}, Código: ${cliente_codigo}`);
         
         res.json({
             mensaje: 'Detalle actualizado correctamente',
@@ -693,6 +726,11 @@ const actualizarDetalleOrden = async (req, res) => {
         res.status(500).json({ error: 'Error al actualizar el detalle', details: error.message });
     }
 };
+
+// ============================================
+// EXPORTACIÓN
+// ============================================
+
 module.exports = {
     obtenerOrdenes,
     obtenerOrdenPorId,
